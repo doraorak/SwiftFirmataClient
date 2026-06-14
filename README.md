@@ -152,10 +152,18 @@ public protocol FirmataTransport: Sendable {
 
 ## Firmware
 
-Any standard Firmata firmware works (e.g. StandardFirmata, ConfigurableFirmata).
-A companion **ESP32 firmware** (Bonjour **and** BLE, single sketch) that’s byte-for-byte
-compatible with this client is included alongside this package — it advertises
-`_firmata._tcp` with `ip`/`port` TXT records for Bonjour and the Nordic UART Service for BLE.
+Works with any standard Firmata firmware — flash
+[StandardFirmata](https://github.com/firmata/arduino) or
+[ConfigurableFirmata](https://github.com/firmata/ConfigurableFirmata) to your board.
+The client speaks Firmata protocol v2.x over whichever transport you supply.
+
+For the built-in transports the device should:
+
+- **`BonjourTransport`** — advertise `_firmata._tcp` on the local network
+  (ideally with `ip` and `port` TXT records, which let the client skip mDNS
+  A-record resolution).
+- **`BLETransport`** — expose the Nordic UART Service
+  (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`), RX = write, TX = notify.
 
 ## Testing
 
