@@ -157,6 +157,11 @@ Works with any standard Firmata firmware — flash
 [ConfigurableFirmata](https://github.com/firmata/ConfigurableFirmata) to your board.
 The client speaks Firmata protocol v2.x over whichever transport you supply.
 
+For the **original ESP32**, the companion
+[**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) sketch is a single
+firmware that speaks both built-in transports (Bonjour/TCP or BLE, selected at
+compile time) and is byte-for-byte compatible with this client.
+
 For the built-in transports the device should:
 
 - **`BonjourTransport`** — advertise `_firmata._tcp` on the local network
