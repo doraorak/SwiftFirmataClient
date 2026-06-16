@@ -23,11 +23,27 @@ public struct SchedulerTask: Sendable {
 
 /// Records the Firmata messages that make up a scheduler task.
 ///
-/// You receive one of these in the `build` closure of
-/// ``FirmataClient/uploadTask(id:startDelayMs:repeatEveryMs:_:)``. The methods
-/// mirror the live ``FirmataClient`` calls but **capture the bytes instead of
-/// sending them** — so they're synchronous (no `await`). Insert ``delay(ms:)``
-/// between actions to make the device wait while the task runs.
+/// You don't create one yourself — ``FirmataClient/uploadTask(id:startDelayMs:repeatEveryMs:_:)``
+/// hands you a recorder inside its trailing closure:
+///
+/// ```swift
+/// try await client.uploadTask(id: 1) { t in
+/// //                                  ^ this is the recorder
+///     t.setPinMode(2, mode: .output)
+///     t.digitalWrite(pin: 2, value: true)
+/// }
+/// ```
+///
+/// **What is `t in`?** It's just Swift closure syntax: `{ t in … }` declares a
+/// closure whose one parameter is named `t`. Here that parameter *is* the
+/// `FirmataTaskRecorder`, so inside the braces you call `t.setPinMode(…)`,
+/// `t.digitalWrite(…)`, `t.delay(…)`, etc. to record each step. The name `t` is
+/// arbitrary — `{ recorder in … }` or the shorthand `{ $0.digitalWrite(…) }` mean
+/// the same thing. (`inout` lets your calls mutate the recorder in place.)
+///
+/// The methods mirror the live ``FirmataClient`` calls but **capture the bytes
+/// instead of sending them** — so they're synchronous (no `await`). Insert
+/// ``delay(ms:)`` between actions to make the device wait while the task runs.
 public struct FirmataTaskRecorder: Sendable {
     /// The recorded bytes so far (the task program). Usually you don't touch this
     /// directly — `uploadTask` reads it for you.
@@ -83,8 +99,16 @@ public struct FirmataTaskRecorder: Sendable {
     // On-device registers + `if`/`else` so a task can make decisions by itself.
     // These emit sub-commands the *standard* Firmata Scheduler doesn't define, so
     // they only work with this project's firmware.
+    //
+    // The device has 16 global Int32 "registers" (`R0`–`R15`), shared across all
+    // tasks and reset by a system reset. You put values into them (a constant, or a
+    // pin/analog reading) and then branch on them with ``ifTrue(_:_:_:then:elseDo:)``.
 
-    /// Record `register = value` (one of 16 global Int32 registers, `0`–`15`).
+    /// Record `register = value` — load a constant into one of the device's 16
+    /// global Int32 registers.
+    /// - Parameters:
+    ///   - register: Destination register index, `0`–`15`.
+    ///   - value: The signed 32-bit value to store.
     public mutating func setRegister(_ register: UInt8, to value: Int32) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extSet, register & 0x0F]
         bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value)))
@@ -101,32 +125,45 @@ public struct FirmataTaskRecorder: Sendable {
                   register & 0x0F, pin & 0x7F, Cmd.endSysEx]
     }
 
-    /// Record `register = analogRead(channel)` (the raw ADC value).
+    /// Record `register = analogRead(channel)` — read an analog input into a register.
+    ///
+    /// - Important: `channel` is an **analog channel index, not a pin number**.
+    ///   Channels are numbered `A0 = 0`, `A1 = 1`, … and map to specific GPIOs on the
+    ///   board (the mapping comes from ``FirmataClient/queryAnalogMapping()``). So
+    ///   `channel: 0` reads whatever pin is wired to A0 — not GPIO 0.
     /// - Parameters:
-    ///   - register: Destination register, `0`–`15`.
-    ///   - channel: Analog channel (A0 = `0`, …).
+    ///   - register: Destination register index, `0`–`15`.
+    ///   - channel: Analog channel (`A0 = 0`, …).
     public mutating func readAnalog(into register: UInt8, channel: UInt8) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extReadAnalog,
                   register & 0x0F, channel & 0x0F, Cmd.endSysEx]
     }
 
-    /// Record an `if` (optionally with `else`). When the task runs, the device
-    /// compares the two operands; the `then` block runs only if the comparison is
-    /// true, otherwise the `elseDo` block (if given) runs.
+    /// Record an `if` (optionally with `else`) that the **device** evaluates while
+    /// the task runs. It compares the two operands with `op`; the `then` block runs
+    /// only when the comparison is true, otherwise the `elseDo` block (if given) runs.
     ///
     /// ```swift
-    /// t.readAnalog(into: 0, channel: 0)
-    /// t.ifTrue(.reg(0), .greaterThan, .const(512),
-    ///     then:   { $0.digitalWrite(pin: 2, value: true) },
-    ///     elseDo: { $0.digitalWrite(pin: 2, value: false) })
+    /// t.readAnalog(into: 0, channel: 0)                    // R0 = analog A0
+    /// t.ifTrue(.reg(0), .greaterThan, .const(512),         // if R0 > 512
+    ///     then:   { b in b.digitalWrite(pin: 2, value: true) },   // …LED on
+    ///     elseDo: { b in b.digitalWrite(pin: 2, value: false) })  // …else off
     /// ```
     ///
+    /// Each branch is itself a recorder closure: the `b` (or shorthand `$0`) passed
+    /// to `then`/`elseDo` is a nested ``FirmataTaskRecorder`` — record that branch's
+    /// steps on it exactly like the outer `t`. Branches may contain anything,
+    /// including ``delay(ms:)`` and further `ifTrue` calls (nesting works).
+    ///
     /// - Parameters:
-    ///   - a: Left operand — a register (`.reg(n)`) or a literal (`.const(v)`).
-    ///   - op: The comparison (`.equal`, `.greaterThan`, …).
+    ///   - a: Left operand — a register `.reg(0...15)` or a literal `.const(value)`.
+    ///   - op: How to compare them — `.equal`, `.notEqual`, `.lessThan`,
+    ///     `.greaterThan`, `.lessOrEqual`, or `.greaterOrEqual`.
     ///   - b: Right operand — a register or a literal.
-    ///   - then: Actions recorded into the "true" branch.
-    ///   - elseDo: Optional actions recorded into the "false" branch.
+    ///   - then: Records the steps that run when `a op b` is **true**. Its argument
+    ///     is the branch's recorder.
+    ///   - elseDo: Optional — records the steps that run when the comparison is
+    ///     **false**. Omit it for a plain `if` with no `else`.
     public mutating func ifTrue(
         _ a: SchedulerOperand,
         _ op: SchedulerComparison,
@@ -181,7 +218,9 @@ public struct FirmataTaskRecorder: Sendable {
 /// An operand for ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)`` — either one of
 /// the device's 16 registers or a literal value. (Non-standard extension.)
 public enum SchedulerOperand: Sendable {
+    /// One of the device's registers, by index (`0`–`15`).
     case reg(UInt8)
+    /// A fixed signed 32-bit literal compared as-is.
     case const(Int32)
 }
 
