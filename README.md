@@ -147,6 +147,31 @@ await client.disconnect()          // the board keeps blinking
 - Low-level control is also available: `createTask`, `addToTask`,
   `scheduleTask`, `deleteTask`, `resetTasks`, `queryAllTasks`, `queryTask`.
 
+### On-device logic (⚠️ non-standard extension)
+
+> Not part of Firmata — works only with this project's ESP32 firmware
+> (`nonstandard-scheduler-logic` branch). See [`NONSTANDARD.md`](NONSTANDARD.md).
+
+A task can also make decisions on the device, so it doesn't just replay a fixed
+sequence. The board has **16 global Int32 registers**; load values into them and
+branch with `ifTrue`:
+
+```swift
+// A night-light running entirely on the board, no client connected.
+try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
+    t.setPinMode(2, mode: .output)
+    t.readAnalog(into: 0, channel: 0)                 // R0 = analog A0
+    t.ifTrue(.reg(0), .lessThan, .const(300),         // dark?
+        then:   { $0.digitalWrite(pin: 2, value: true) },   // LED on
+        elseDo: { $0.digitalWrite(pin: 2, value: false) })  // else off
+}
+```
+
+- `setRegister(_:to:)`, `readDigital(into:pin:)`, `readAnalog(into:channel:)`
+- `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.const(value)`;
+  comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
+- `channel` is an analog channel index (`A0 = 0`, …), **not** a pin number.
+
 ### Disconnecting
 
 ```swift
