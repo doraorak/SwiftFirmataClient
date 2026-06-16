@@ -1,10 +1,15 @@
-# ⚠️ Non-standard branch — scheduler logic extension
+# Scheduler logic extension (this branch)
 
-This branch (`nonstandard-scheduler-logic`) **deliberately steps outside the Firmata
-standard.** `main` and the `standard` branch (and every tagged release, incl.
-`1.1.0`) are standard-compliant Firmata. This branch is **not** — it pairs with the
-`ESP32Firmata` firmware's `nonstandard-scheduler-logic` branch and works with
-nothing else.
+This branch (`nonstandard-scheduler-logic`) adds an **on-device logic** extension
+on top of the Firmata Scheduler. `main` / `standard` (and every tagged release,
+incl. `1.1.0`) are the plain standard-compliant client. This branch pairs with the
+`ESP32Firmata` firmware's `nonstandard-scheduler-logic` branch.
+
+The Scheduler **control protocol is unchanged** — tasks are still uploaded with the
+standard `CREATE`/`ADD`/`SCHEDULE` messages. The logic lives in the task data and
+rides under the reference scheduler's reserved `EXTENDED_SCHEDULER_COMMAND` (`0x7F`),
+so a **standard** Firmata scheduler ignores it gracefully (the task runs, the
+conditionals are no-ops — no crash). Other hosts won't *act on* these ops.
 
 ## What it adds
 
@@ -28,6 +33,7 @@ try await client.uploadTask(id: 1, repeatEveryMs: 1000) { t in
 - 16 global Int32 registers on the device; **`if`/`else` only** (forward skips, no
   arbitrary jumps/loops), so a task can never hang the board.
 
-These emit extra sub-commands under the Scheduler SysEx (`0x7B`, range `0x10+`)
-that only this project's firmware understands. The encoding is **not** part of any
-Firmata spec.
+These emit ops under `SCHEDULER_DATA` → `EXTENDED_SCHEDULER_COMMAND` (`0x7B 0x7F …`).
+The ops themselves aren't part of any Firmata spec, but they ride the reference
+scheduler's documented extension command, so standard schedulers ignore them
+rather than choking.

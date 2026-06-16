@@ -147,10 +147,13 @@ await client.disconnect()          // the board keeps blinking
 - Low-level control is also available: `createTask`, `addToTask`,
   `scheduleTask`, `deleteTask`, `resetTasks`, `queryAllTasks`, `queryTask`.
 
-### On-device logic (⚠️ non-standard extension)
+### On-device logic (scheduler extension)
 
-> Not part of Firmata — works only with this project's ESP32 firmware
-> (`nonstandard-scheduler-logic` branch). See [`NONSTANDARD.md`](NONSTANDARD.md).
+> An extension carried under the scheduler's reserved `EXTENDED_SCHEDULER_COMMAND`
+> (`0x7F`) — the Scheduler control protocol is unchanged, and a standard Firmata
+> scheduler ignores these ops gracefully (no crash; the conditionals are no-ops).
+> Acted on only by this project's ESP32 firmware (`nonstandard-scheduler-logic`
+> branch). See [`NONSTANDARD.md`](NONSTANDARD.md).
 
 A task can also make decisions on the device, so it doesn't just replay a fixed
 sequence. The board has **16 global Int32 registers**; load values into them and

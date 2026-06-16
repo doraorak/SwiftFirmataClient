@@ -97,7 +97,9 @@ enum Sched {
     static let queryAllReply: UInt8 = 0x09
     static let queryReply:    UInt8 = 0x0A
 
-    // NON-STANDARD logic extension (this fork only; see NONSTANDARD.md).
+    // Logic extension (see NONSTANDARD.md). Carried under the standard scheduler's
+    // reserved extension command (0x7F), so a base scheduler ignores it cleanly.
+    static let extCommand:     UInt8 = 0x7F  // EXTENDED_SCHEDULER_COMMAND
     static let extSet:         UInt8 = 0x10  // R[d] = const
     static let extReadDigital: UInt8 = 0x11  // R[d] = digitalRead(pin)
     static let extReadAnalog:  UInt8 = 0x12  // R[d] = analogRead(channel)

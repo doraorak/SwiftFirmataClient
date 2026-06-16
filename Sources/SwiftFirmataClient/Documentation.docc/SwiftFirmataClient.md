@@ -95,10 +95,13 @@ try await client.deleteTask(id: 2)
 > `t.delay(…)` on it to record steps — nothing is sent until `uploadTask` ships
 > the whole recording. The name `t` is arbitrary.
 
-### On-device logic (⚠️ non-standard extension)
+### On-device logic (scheduler extension)
 
-> Important: This is **not** part of Firmata. It only works with this project's
-> ESP32 firmware (`nonstandard-scheduler-logic` branch). See `NONSTANDARD.md`.
+> Important: An extension carried under the scheduler's reserved
+> `EXTENDED_SCHEDULER_COMMAND` (`0x7F`). The Scheduler control protocol is
+> unchanged, and a standard Firmata scheduler ignores these ops gracefully (no
+> crash; the conditionals become no-ops). Acted on only by this project's ESP32
+> firmware (`nonstandard-scheduler-logic` branch). See `NONSTANDARD.md`.
 
 A task can also make its own decisions, so it doesn't just replay a fixed
 sequence. The device has **16 global Int32 registers**; you load values into them

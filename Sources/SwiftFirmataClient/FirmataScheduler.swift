@@ -97,8 +97,9 @@ public struct FirmataTaskRecorder: Sendable {
     // MARK: NON-STANDARD logic extension (see NONSTANDARD.md)
     //
     // On-device registers + `if`/`else` so a task can make decisions by itself.
-    // These emit sub-commands the *standard* Firmata Scheduler doesn't define, so
-    // they only work with this project's firmware.
+    // These ride under the scheduler's reserved EXTENDED_SCHEDULER_COMMAND (0x7F),
+    // so a standard scheduler ignores them gracefully; only this project's firmware
+    // acts on them. The Scheduler control protocol itself is unchanged.
     //
     // The device has 16 global Int32 "registers" (`R0`–`R15`), shared across all
     // tasks and reset by a system reset. You put values into them (a constant, or a
@@ -110,7 +111,7 @@ public struct FirmataTaskRecorder: Sendable {
     ///   - register: Destination register index, `0`–`15`.
     ///   - value: The signed 32-bit value to store.
     public mutating func setRegister(_ register: UInt8, to value: Int32) {
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extSet, register & 0x0F]
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSet, register & 0x0F]
         bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value)))
         bytes.append(Cmd.endSysEx)
     }
@@ -121,7 +122,7 @@ public struct FirmataTaskRecorder: Sendable {
     ///   - register: Destination register, `0`–`15`.
     ///   - pin: The board pin to read.
     public mutating func readDigital(into register: UInt8, pin: UInt8) {
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extReadDigital,
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extReadDigital,
                   register & 0x0F, pin & 0x7F, Cmd.endSysEx]
     }
 
@@ -135,7 +136,7 @@ public struct FirmataTaskRecorder: Sendable {
     ///   - register: Destination register index, `0`–`15`.
     ///   - channel: Analog channel (`A0 = 0`, …).
     public mutating func readAnalog(into register: UInt8, channel: UInt8) {
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extReadAnalog,
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extReadAnalog,
                   register & 0x0F, channel & 0x0F, Cmd.endSysEx]
     }
 
@@ -201,7 +202,7 @@ public struct FirmataTaskRecorder: Sendable {
     private static func ifMessage(_ a: SchedulerOperand, _ op: SchedulerComparison,
                                   _ b: SchedulerOperand, skipBytes: Int) -> [UInt8] {
         let n = UInt16(min(skipBytes, 0x3FFF))
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extIf, op.rawValue]
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extIf, op.rawValue]
         m += operandBytes(a)
         m += operandBytes(b)
         m += [UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
@@ -210,7 +211,7 @@ public struct FirmataTaskRecorder: Sendable {
 
     private static func skipMessage(byteCount: Int) -> [UInt8] {
         let n = UInt16(min(byteCount, 0x3FFF))
-        return [Cmd.startSysEx, SysEx.schedulerData, Sched.extSkip,
+        return [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSkip,
                 UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
     }
 }
