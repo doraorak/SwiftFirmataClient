@@ -122,11 +122,57 @@ let reply = try await client.i2cReadOnce(address: 0x48, register: 0x00, count: 2
 print(reply.data)
 ```
 
+### Scheduling tasks (run after disconnect)
+
+The device can store *tasks* — recorded sequences of Firmata messages with
+delays — and run them on its own, even after the client disconnects (Firmata
+Scheduler, SysEx `0x7B`). Build a task with the recorder, upload it, and leave:
+
+```swift
+// Blink pin 2 every 250 ms — forever, with no client connected.
+try await client.uploadTask(id: 1, repeatEveryMs: 250) { t in
+    t.setPinMode(2, mode: .output)
+    t.digitalWrite(pin: 2, value: true)
+    t.delay(ms: 250)
+    t.digitalWrite(pin: 2, value: false)
+}
+await client.disconnect()          // the board keeps blinking
+```
+
+- `startDelayMs` delays the first run; `repeatEveryMs` makes the task loop with
+  that gap (omit it for a one-shot, which runs once and is then removed).
+- `uploadTask` confirms receipt with a round-trip before returning, so it is
+  safe to `disconnect()` immediately afterwards.
+- Tasks live in RAM — a power cycle or `systemReset()` clears them.
+- Low-level control is also available: `createTask`, `addToTask`,
+  `scheduleTask`, `deleteTask`, `resetTasks`, `queryAllTasks`, `queryTask`.
+
 ### Disconnecting
 
 ```swift
 await client.disconnect()
 ```
+
+### One client, one board
+
+A `FirmataClient` owns a single transport/connection for its lifetime — to
+switch transports (Bonjour ↔ BLE) or reconnect, `disconnect()` and make a new
+one. A board has a single master; a dual-transport firmware enforces this with
+**latest-wins** (a new connection on either transport evicts the current one).
+When you are evicted, `messages` finishes and `lastDisconnectReason` tells you
+why:
+
+```swift
+for await _ in client.messages {}            // drains until the link ends
+switch await client.lastDisconnectReason {
+case .replacedByAnotherClient: …             // another app/computer took over
+case .transportClosed:         …             // network drop / device reset
+case .localRequest, .none:     break         // you called disconnect()
+}
+```
+
+This is fully standard-compliant: eviction is signalled with an ordinary
+`STRING_DATA` sentinel, so nothing non-standard goes on the wire.
 
 ## API overview
 
@@ -134,12 +180,13 @@ await client.disconnect()
 
 | Group | Methods |
 |---|---|
-| Lifecycle | `connect()`, `disconnect()`, `messages` (`AsyncStream<FirmataMessage>`) |
+| Lifecycle | `connect()`, `disconnect()`, `messages` (`AsyncStream<FirmataMessage>`), `lastDisconnectReason` |
 | Digital | `setPinMode(_:mode:)`, `digitalWrite(pin:value:)`, `writeDigitalPort(_:pinMask:)`, `reportDigitalPort(_:enable:)` |
 | Analog | `analogWrite(pin:value:)`, `extendedAnalogWrite(pin:value:)`, `reportAnalogPin(_:enable:)` |
 | Queries | `queryProtocolVersion()`, `queryFirmware()`, `queryCapabilities()`, `queryAnalogMapping()`, `queryPinState(pin:)` |
 | System | `systemReset()`, `setSamplingInterval(milliseconds:)`, `sendString(_:)` |
 | I2C | `configureI2C(delayMicroseconds:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:register:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
+| Scheduler | `uploadTask(id:startDelayMs:repeatEveryMs:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delayMs:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
 
 Custom transports conform to:
 

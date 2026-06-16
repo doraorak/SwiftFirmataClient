@@ -80,4 +80,20 @@ enum SysEx {
     static let reportFirmware:        UInt8 = 0x79
     static let samplingInterval:      UInt8 = 0x7A
     static let samplingIntervalQuery: UInt8 = 0x7C
+    static let schedulerData:         UInt8 = 0x7B
+}
+
+/// Scheduler sub-commands (first payload byte after `SysEx.schedulerData`).
+enum Sched {
+    static let create:        UInt8 = 0x00
+    static let delete:        UInt8 = 0x01
+    static let add:           UInt8 = 0x02
+    static let delay:         UInt8 = 0x03
+    static let schedule:      UInt8 = 0x04
+    static let queryAll:      UInt8 = 0x05
+    static let query:         UInt8 = 0x06
+    static let reset:         UInt8 = 0x07
+    static let errorReply:    UInt8 = 0x08
+    static let queryAllReply: UInt8 = 0x09
+    static let queryReply:    UInt8 = 0x0A
 }

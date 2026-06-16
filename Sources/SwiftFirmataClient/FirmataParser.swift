@@ -98,7 +98,42 @@ public struct FirmataParser: Sendable {
         case SysEx.stringData:            return .stringData(decode7BitPairs(payload))
         case SysEx.i2cReply:              return parseI2CReply(payload)
         case SysEx.extendedAnalog:        return parseExtendedAnalog(payload)
+        case SysEx.schedulerData:         return parseScheduler(payload)
         default:                          return .unknownSysEx(id: id, data: payload)
+        }
+    }
+
+    private func parseScheduler(_ data: [UInt8]) -> FirmataMessage? {
+        guard let sub = data.first else { return nil }
+        let body = Array(data.dropFirst())
+        switch sub {
+        case Sched.queryAllReply:
+            return .schedulerTaskList(taskIds: body)
+
+        case Sched.errorReply:
+            guard let id = body.first else { return nil }
+            return .schedulerError(taskId: id)
+
+        case Sched.queryReply:
+            guard let id = body.first else { return nil }
+            // payload (7-bit packed) = time_ms(4 LE) + len(2 LE) + pos(2 LE) + data[len]
+            let encoded = Array(body.dropFirst())
+            let decoded = decode7BitFirmata(num7BitOutBytes(encoded.count), encoded)
+            guard decoded.count >= 8 else {
+                return .schedulerTask(SchedulerTask(id: id, timeMs: 0, length: 0, position: 0, data: []))
+            }
+            var timeMs = UInt32(decoded[0])
+            timeMs |= UInt32(decoded[1]) << 8
+            timeMs |= UInt32(decoded[2]) << 16
+            timeMs |= UInt32(decoded[3]) << 24
+            let length = Int(decoded[4]) | (Int(decoded[5]) << 8)
+            let pos    = Int(decoded[6]) | (Int(decoded[7]) << 8)
+            let taskData = Array(decoded.dropFirst(8).prefix(length))
+            return .schedulerTask(SchedulerTask(id: id, timeMs: timeMs, length: length,
+                                                position: pos, data: taskData))
+
+        default:
+            return .unknownSysEx(id: SysEx.schedulerData, data: data)
         }
     }
 

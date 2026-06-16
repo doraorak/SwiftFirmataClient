@@ -32,6 +32,15 @@ public enum FirmataMessage: Sendable {
     /// Extended analog value (pin > 15 or value > 14 bits).
     case extendedAnalog(pin: UInt8, value: Int32)
 
+    /// Reply to a "query all scheduler tasks" request: the ids of stored tasks.
+    case schedulerTaskList(taskIds: [UInt8])
+
+    /// Reply to a "query scheduler task" request.
+    case schedulerTask(SchedulerTask)
+
+    /// Scheduler error (e.g. a query for a task id that does not exist).
+    case schedulerError(taskId: UInt8)
+
     /// Unrecognised SysEx message.
     case unknownSysEx(id: UInt8, data: [UInt8])
 }
