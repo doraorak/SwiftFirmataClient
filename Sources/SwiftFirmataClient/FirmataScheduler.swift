@@ -77,6 +77,123 @@ public struct FirmataTaskRecorder: Sendable {
         bytes += encode7BitFirmata(timeBytes(ms))
         bytes.append(Cmd.endSysEx)
     }
+
+    // MARK: NON-STANDARD logic extension (see NONSTANDARD.md)
+    //
+    // On-device registers + `if`/`else` so a task can make decisions by itself.
+    // These emit sub-commands the *standard* Firmata Scheduler doesn't define, so
+    // they only work with this project's firmware.
+
+    /// Record `register = value` (one of 16 global Int32 registers, `0`–`15`).
+    public mutating func setRegister(_ register: UInt8, to value: Int32) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extSet, register & 0x0F]
+        bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value)))
+        bytes.append(Cmd.endSysEx)
+    }
+
+    /// Record `register = digitalRead(pin)` (stores `0`/`1`). The pin should be an
+    /// input — record `setPinMode(pin, mode: .input)` earlier in the task.
+    /// - Parameters:
+    ///   - register: Destination register, `0`–`15`.
+    ///   - pin: The board pin to read.
+    public mutating func readDigital(into register: UInt8, pin: UInt8) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extReadDigital,
+                  register & 0x0F, pin & 0x7F, Cmd.endSysEx]
+    }
+
+    /// Record `register = analogRead(channel)` (the raw ADC value).
+    /// - Parameters:
+    ///   - register: Destination register, `0`–`15`.
+    ///   - channel: Analog channel (A0 = `0`, …).
+    public mutating func readAnalog(into register: UInt8, channel: UInt8) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extReadAnalog,
+                  register & 0x0F, channel & 0x0F, Cmd.endSysEx]
+    }
+
+    /// Record an `if` (optionally with `else`). When the task runs, the device
+    /// compares the two operands; the `then` block runs only if the comparison is
+    /// true, otherwise the `elseDo` block (if given) runs.
+    ///
+    /// ```swift
+    /// t.readAnalog(into: 0, channel: 0)
+    /// t.ifTrue(.reg(0), .greaterThan, .const(512),
+    ///     then:   { $0.digitalWrite(pin: 2, value: true) },
+    ///     elseDo: { $0.digitalWrite(pin: 2, value: false) })
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - a: Left operand — a register (`.reg(n)`) or a literal (`.const(v)`).
+    ///   - op: The comparison (`.equal`, `.greaterThan`, …).
+    ///   - b: Right operand — a register or a literal.
+    ///   - then: Actions recorded into the "true" branch.
+    ///   - elseDo: Optional actions recorded into the "false" branch.
+    public mutating func ifTrue(
+        _ a: SchedulerOperand,
+        _ op: SchedulerComparison,
+        _ b: SchedulerOperand,
+        then: (inout FirmataTaskRecorder) -> Void,
+        elseDo: ((inout FirmataTaskRecorder) -> Void)? = nil
+    ) {
+        var thenRec = FirmataTaskRecorder(); then(&thenRec)
+        var thenBytes = thenRec.bytes
+
+        var elseBytes: [UInt8] = []
+        if let elseDo {
+            var elseRec = FirmataTaskRecorder(); elseDo(&elseRec)
+            elseBytes = elseRec.bytes
+        }
+        // If there's an else, the then-branch ends by skipping over the else block.
+        if !elseBytes.isEmpty {
+            thenBytes += Self.skipMessage(byteCount: elseBytes.count)
+        }
+        // IF: when the comparison is false, skip the whole then-branch.
+        bytes += Self.ifMessage(a, op, b, skipBytes: thenBytes.count)
+        bytes += thenBytes
+        bytes += elseBytes
+    }
+
+    // MARK: Extension byte builders
+
+    private static func operandBytes(_ o: SchedulerOperand) -> [UInt8] {
+        switch o {
+        case .reg(let r):   return [0, r & 0x0F]
+        case .const(let v): return [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: v)))
+        }
+    }
+
+    private static func ifMessage(_ a: SchedulerOperand, _ op: SchedulerComparison,
+                                  _ b: SchedulerOperand, skipBytes: Int) -> [UInt8] {
+        let n = UInt16(min(skipBytes, 0x3FFF))
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extIf, op.rawValue]
+        m += operandBytes(a)
+        m += operandBytes(b)
+        m += [UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
+        return m
+    }
+
+    private static func skipMessage(byteCount: Int) -> [UInt8] {
+        let n = UInt16(min(byteCount, 0x3FFF))
+        return [Cmd.startSysEx, SysEx.schedulerData, Sched.extSkip,
+                UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
+    }
+}
+
+/// An operand for ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)`` — either one of
+/// the device's 16 registers or a literal value. (Non-standard extension.)
+public enum SchedulerOperand: Sendable {
+    case reg(UInt8)
+    case const(Int32)
+}
+
+/// A comparison for ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``.
+/// (Non-standard extension.)
+public enum SchedulerComparison: UInt8, Sendable {
+    case equal          = 0
+    case notEqual       = 1
+    case lessThan       = 2
+    case greaterThan    = 3
+    case lessOrEqual    = 4
+    case greaterOrEqual = 5
 }
 
 // MARK: - Encoder7Bit (8-bit data packed into 7-bit bytes)

@@ -96,4 +96,11 @@ enum Sched {
     static let errorReply:    UInt8 = 0x08
     static let queryAllReply: UInt8 = 0x09
     static let queryReply:    UInt8 = 0x0A
+
+    // NON-STANDARD logic extension (this fork only; see NONSTANDARD.md).
+    static let extSet:         UInt8 = 0x10  // R[d] = const
+    static let extReadDigital: UInt8 = 0x11  // R[d] = digitalRead(pin)
+    static let extReadAnalog:  UInt8 = 0x12  // R[d] = analogRead(channel)
+    static let extIf:          UInt8 = 0x13  // if !(a op b) skip N bytes
+    static let extSkip:        UInt8 = 0x14  // unconditional skip N bytes
 }
