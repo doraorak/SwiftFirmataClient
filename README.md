@@ -152,8 +152,8 @@ await client.disconnect()          // the board keeps blinking
 > An extension carried under the scheduler's reserved `EXTENDED_SCHEDULER_COMMAND`
 > (`0x7F`) — the Scheduler control protocol is unchanged, and a standard Firmata
 > scheduler ignores these ops gracefully (no crash; the conditionals are no-ops).
-> Acted on only by this project's ESP32 firmware (`nonstandard-scheduler-logic`
-> branch). See [`NONSTANDARD.md`](NONSTANDARD.md).
+> Acted on only by this project's ESP32 firmware (`main` branch). The wire
+> format is documented under *Custom protocol* below.
 
 A task can also make decisions on the device, so it doesn't just replay a fixed
 sequence. The board has **16 global Int32 registers**; load values into them and
@@ -174,6 +174,32 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
 - `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.const(value)`;
   comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
 - `channel` is an analog channel index (`A0 = 0`, …), **not** a pin number.
+
+#### Custom protocol — wire format (byte commands)
+
+The logic ops are SysEx embedded in a task's data and replayed by the Scheduler,
+under `SCHEDULER_DATA` (`0x7B`) → `EXTENDED_SCHEDULER_COMMAND` (`0x7F`). `<const>`
+is an Int32 packed as 5 Encoder7Bit bytes; `<skip>` is a 14-bit count,
+little-endian 7-bit (`skipLo skipHi`).
+
+```
+SET           F0 7B 7F 10 <reg> <const:5>                     F7   // R[reg] = const
+READ_DIGITAL  F0 7B 7F 11 <reg> <pin>                         F7   // R[reg] = digitalRead(pin)
+READ_ANALOG   F0 7B 7F 12 <reg> <channel>                     F7   // R[reg] = analogRead(channel)
+IF            F0 7B 7F 13 <op> <operandA> <operandB> <skip:2> F7   // if !(A op B): pos += skip
+SKIP          F0 7B 7F 14 <skip:2>                            F7   // pos += skip (else)
+```
+
+- `<reg>`: register index, low nibble (`0`–`15`).
+- `<op>`: `0 ==`, `1 !=`, `2 <`, `3 >`, `4 <=`, `5 >=`.
+- `<operand>`: a type byte then data — `00 <reg>` (register) or `01 <const:5>` (literal).
+- `if`/`else` layout: `[IF skip=thenLen] [then…] [SKIP skip=elseLen] [else…]` — a
+  false `IF` skips the then-block (landing on `else`); a true one runs `then`,
+  whose trailing `SKIP` jumps over `else`.
+
+The base Scheduler messages (`CREATE_TASK` `0x00`, `ADD_TO_TASK` `0x02`,
+`SCHEDULE_TASK` `0x04`, `DELAY_TASK` `0x03`, `QUERY` `0x05`/`0x06`, `RESET` `0x07`)
+are unchanged from standard Firmata.
 
 ### Disconnecting
 
