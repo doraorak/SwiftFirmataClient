@@ -1,5 +1,9 @@
 # SwiftFirmataClient
 
+> **`no-extension` branch:** standard Firmata client only. For the on-device
+> scheduler logic extension (registers + `if`/`else`), use the `main` branch.
+
+
 A modern, concurrency-safe [Firmata](https://github.com/firmata/protocol) client for Swift — talk to an Arduino, ESP32, or any Firmata-compatible board from macOS or iOS over **Bonjour/TCP** or **BLE**.
 
 Built on Swift’s structured concurrency: the client is an `actor`, every public API is `async`, and incoming messages are delivered as an `AsyncStream`.
