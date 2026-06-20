@@ -20,7 +20,7 @@ let fw = try await client.queryFirmware()
 print("Connected to \(fw.name) v\(fw.major).\(fw.minor)")
 
 try await client.setPinMode(2, mode: .output)
-try await client.digitalWrite(pin: 2, value: true)   // LED on
+try await client.digitalWrite(pin: 2, high: true)   // LED on
 ```
 
 ### Connecting
@@ -82,9 +82,9 @@ Use ``FirmataClient/uploadTask(id:startDelayMs:repeatEveryMs:_:)`` with a
 // Blink pin 2 forever, 400 ms on / 400 ms off — survives disconnect.
 try await client.uploadTask(id: 2, repeatEveryMs: 400) { t in
     t.setPinMode(2, mode: .output)
-    t.digitalWrite(pin: 2, value: true)
+    t.digitalWrite(pin: 2, high: true)
     t.delay(ms: 400)
-    t.digitalWrite(pin: 2, value: false)
+    t.digitalWrite(pin: 2, high: false)
 }
 // ...later:
 try await client.deleteTask(id: 2)
@@ -116,8 +116,8 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
     t.setPinMode(2, mode: .output)
     t.readAnalog(into: 0, channel: 0)                 // R0 = analog A0
     t.ifTrue(.reg(0), .lessThan, .const(300),         // dark?
-        then:   { $0.digitalWrite(pin: 2, value: true) },   // LED on
-        elseDo: { $0.digitalWrite(pin: 2, value: false) })  // else off
+        then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
+        elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
 ```
 

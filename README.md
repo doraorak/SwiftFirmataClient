@@ -12,7 +12,7 @@ let fw = try await client.queryFirmware()
 print("Connected to \(fw.name) v\(fw.major).\(fw.minor)")
 
 try await client.setPinMode(2, mode: .output)
-try await client.digitalWrite(pin: 2, value: true)   // LED on
+try await client.digitalWrite(pin: 2, high: true)   // LED on
 ```
 
 ## Features
@@ -132,9 +132,9 @@ Scheduler, SysEx `0x7B`). Build a task with the recorder, upload it, and leave:
 // Blink pin 2 every 250 ms — forever, with no client connected.
 try await client.uploadTask(id: 1, repeatEveryMs: 250) { t in
     t.setPinMode(2, mode: .output)
-    t.digitalWrite(pin: 2, value: true)
+    t.digitalWrite(pin: 2, high: true)
     t.delay(ms: 250)
-    t.digitalWrite(pin: 2, value: false)
+    t.digitalWrite(pin: 2, high: false)
 }
 await client.disconnect()          // the board keeps blinking
 ```
@@ -165,8 +165,8 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
     t.setPinMode(2, mode: .output)
     t.readAnalog(into: 0, channel: 0)                 // R0 = analog A0
     t.ifTrue(.reg(0), .lessThan, .const(300),         // dark?
-        then:   { $0.digitalWrite(pin: 2, value: true) },   // LED on
-        elseDo: { $0.digitalWrite(pin: 2, value: false) })  // else off
+        then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
+        elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
 ```
 
@@ -174,6 +174,46 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
 - `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.const(value)`;
   comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
 - `channel` is an analog channel index (`A0 = 0`, …), **not** a pin number.
+
+### Internet actions (scheduler extension)
+
+A task can also **reach the internet over the board's Wi-Fi** — make an HTTP(S)
+request and act on the result — so the device can talk to web services on its
+own, with no host connected:
+
+```swift
+// Every minute, fetch a number from an endpoint and drive pin 2 when it's high.
+try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
+    t.setPinMode(2, mode: .output)
+    t.httpGet("http://example.com/sensor", statusInto: 0, valueInto: 1)
+    t.ifTrue(.reg(1), .greaterThan, .const(100),         // body's first number > 100?
+        then:   { $0.digitalWrite(pin: 2, high: true) },
+        elseDo: { $0.digitalWrite(pin: 2, high: false) })
+}
+```
+
+- `httpGet(_:statusInto:valueInto:)` / `httpPost(_:body:statusInto:valueInto:)`.
+  The device stores the **HTTP status** in `R[statusInto]` (`0` = Wi-Fi down /
+  failure) and the **first integer found in the response body** in `R[valueInto]`,
+  so later `ifTrue` steps can branch on internet data.
+- If a host is connected while the task runs, the full result also arrives as
+  `FirmataMessage.httpResponse(status:body:)` on the `messages` stream.
+
+You can also fire a request **live** and await its result directly:
+
+```swift
+let r = try await client.httpGet("http://worldtimeapi.org/api/timezone/Etc/UTC")
+print(r.status, r.body)                          // e.g. 200, {"...":"..."}
+let p = try await client.httpPost("http://example.com/log", body: #"{"on":true}"#)
+```
+
+- The device performs the request and **blocks briefly** (up to ~8 s) while it
+  does; `httpGet`/`httpPost` take a `timeout` (default 15 s).
+- **URL/body must be ASCII** and fit one SysEx frame (URL + body ≲ 500 bytes).
+- The body returned to the host is truncated by the device to a few hundred bytes
+  (it's meant for status/short JSON, not large downloads).
+- **HTTP only** in this build — `https://` needs the firmware's TLS (SSL) client
+  enabled (see the firmware README).
 
 #### Custom protocol — wire format (byte commands)
 
@@ -188,6 +228,7 @@ READ_DIGITAL  F0 7B 7F 11 <reg> <pin>                         F7   // R[reg] = d
 READ_ANALOG   F0 7B 7F 12 <reg> <channel>                     F7   // R[reg] = analogRead(channel)
 IF            F0 7B 7F 13 <op> <operandA> <operandB> <skip:2> F7   // if !(A op B): pos += skip
 SKIP          F0 7B 7F 14 <skip:2>                            F7   // pos += skip (else)
+HTTP          F0 7B 7F 15 <method> <statusReg> <valueReg> <urlLen:2> <url…> <bodyLen:2> <body…> F7
 ```
 
 - `<reg>`: register index, low nibble (`0`–`15`).
@@ -196,6 +237,19 @@ SKIP          F0 7B 7F 14 <skip:2>                            F7   // pos += ski
 - `if`/`else` layout: `[IF skip=thenLen] [then…] [SKIP skip=elseLen] [else…]` — a
   false `IF` skips the then-block (landing on `else`); a true one runs `then`,
   whose trailing `SKIP` jumps over `else`.
+- `HTTP` (`0x15`): `<method>` `0`=GET `1`=POST; `<statusReg>`/`<valueReg>` are
+  register indices; `<urlLen>`/`<bodyLen>` are 14-bit little-endian (`lo hi`);
+  `<url>`/`<body>` are raw 7-bit ASCII. The device sets `R[statusReg]` = HTTP
+  status (`0` on failure) and `R[valueReg]` = first integer in the body. POST
+  sends `Content-Type: application/json`.
+
+The device replies (only when a host is connected) with the result:
+
+```
+HTTP_REPLY    F0 7B 0B <status:2> <body 14-bit LSB/MSB pairs…> F7   // device -> host
+```
+`<status:2>` is the HTTP code as `lo hi`; the body follows as `STRING_DATA`-style
+14-bit pairs. Parsed by the client into `FirmataMessage.httpResponse(status:body:)`.
 
 The base Scheduler messages (`CREATE_TASK` `0x00`, `ADD_TO_TASK` `0x02`,
 `SCHEDULE_TASK` `0x04`, `DELAY_TASK` `0x03`, `QUERY` `0x05`/`0x06`, `RESET` `0x07`)
@@ -235,12 +289,26 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 | Group | Methods |
 |---|---|
 | Lifecycle | `connect()`, `disconnect()`, `messages` (`AsyncStream<FirmataMessage>`), `lastDisconnectReason` |
-| Digital | `setPinMode(_:mode:)`, `digitalWrite(pin:value:)`, `writeDigitalPort(_:pinMask:)`, `reportDigitalPort(_:enable:)` |
-| Analog | `analogWrite(pin:value:)`, `extendedAnalogWrite(pin:value:)`, `reportAnalogPin(_:enable:)` |
+| Digital | `setPinMode(_:mode:)`, `digitalWrite(pin:high:)`, `writeDigitalPort(_:pinMask:)`, `reportDigitalPort(_:enable:)` |
+| Analog | `analogWrite(channel:value:)`, `extendedAnalogWrite(pin:value:)`, `reportAnalogPin(_:enable:)` |
 | Queries | `queryProtocolVersion()`, `queryFirmware()`, `queryCapabilities()`, `queryAnalogMapping()`, `queryPinState(pin:)` |
 | System | `systemReset()`, `setSamplingInterval(milliseconds:)`, `sendString(_:)` |
 | I2C | `configureI2C(delayMicroseconds:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:register:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
+| Live reads | `digitalRead(pin:timeout:) -> Bool`, `analogRead(channel:timeout:) -> UInt16` |
 | Scheduler | `uploadTask(id:startDelayMs:repeatEveryMs:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delayMs:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
+| **Extension¹** — internet | `httpGet(_:timeout:) -> HTTPResponse`, `httpPost(_:body:timeout:) -> HTTPResponse` |
+
+`FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
+`digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)` — plus the
+**extension¹** ops: `setRegister`, `readDigital(into:)`/`digitalRead(pin:)`,
+`readAnalog(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
+`httpGet(_:statusInto:valueInto:)`, `httpPost(_:body:statusInto:valueInto:)`.
+
+> **¹ Non-standard extension — requires supported firmware.** The on-device logic
+> (registers / `if`-`else`) and internet actions are **not part of standard Firmata**.
+> They ride under the Scheduler's reserved `EXTENDED_SCHEDULER_COMMAND` (`0x7F`) so a
+> stock Firmata board *ignores them harmlessly*, but they only **do** anything on
+> firmware that implements this project's extension — see [Firmware](#firmware).
 
 Custom transports conform to:
 
@@ -253,15 +321,34 @@ public protocol FirmataTransport: Sendable {
 
 ## Firmware
 
-Works with any standard Firmata firmware — flash
-[StandardFirmata](https://github.com/firmata/arduino) or
-[ConfigurableFirmata](https://github.com/firmata/ConfigurableFirmata) to your board.
-The client speaks Firmata protocol v2.x over whichever transport you supply.
+**Two tiers of functionality:**
 
-For the **original ESP32**, the companion
-[**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) sketch is a single
-firmware that speaks both built-in transports (Bonjour/TCP or BLE, selected at
-compile time) and is byte-for-byte compatible with this client.
+1. **Standard Firmata (any firmware).** Pin I/O, queries, I2C, the base Scheduler,
+   strings, sampling — these work with **any** standard Firmata firmware
+   ([StandardFirmata](https://github.com/firmata/arduino) /
+   [ConfigurableFirmata](https://github.com/firmata/ConfigurableFirmata)) over
+   whichever transport you supply. The client speaks Firmata protocol v2.x.
+
+2. **Extension features (require *this project's* firmware).** The on-device
+   **logic extension** (16 registers, `readDigital`/`readAnalog`, `ifTrue`) and
+   **internet actions** (`httpGet`/`httpPost`, live and in tasks) are a
+   **non-standard extension**. They are carried under the Scheduler's reserved
+   `EXTENDED_SCHEDULER_COMMAND` (`0x7F`), so a stock Firmata board **ignores them
+   without error** — but nothing happens unless the firmware implements the
+   extension (and, for internet actions, has Wi-Fi). Calling `httpGet` against
+   unsupported firmware simply times out; a logic task degrades to its no-op
+   parts.
+
+**Firmware that supports the extension** (both byte-for-byte compatible with this
+client, both implement the logic extension **and** internet actions):
+
+- [**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) — the Arduino/C++
+  sketch for the original ESP32 (Wi-Fi/TCP + Bonjour **and** BLE in one build).
+- [**ESP32FirmataSwift**](https://github.com/doraorak/ESP32FirmataSwift) — an
+  Embedded-Swift port of the same firmware.
+
+> Internet actions need Wi-Fi on the board and currently support **`http://` only**
+> (`https://` needs a TLS client built into the firmware — see the firmware READMEs).
 
 For the built-in transports the device should:
 

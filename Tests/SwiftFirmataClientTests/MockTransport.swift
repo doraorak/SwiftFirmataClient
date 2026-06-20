@@ -137,6 +137,18 @@ final class MockTransport: FirmataTransport, @unchecked Sendable {
         bytes.append(0xF7)
         inject(bytes)
     }
+
+    /// Inject an HTTP_REPLY (non-standard extension): F0 7B 0B <status:2> <body 14-bit pairs> F7.
+    func injectHTTPResponse(status: Int, body: String) {
+        var bytes: [UInt8] = [0xF0, 0x7B, 0x0B,
+                              UInt8(status & 0x7F), UInt8((status >> 7) & 0x7F)]
+        for scalar in body.unicodeScalars {
+            bytes.append(UInt8(scalar.value & 0x7F))
+            bytes.append(UInt8((scalar.value >> 7) & 0x7F))
+        }
+        bytes.append(0xF7)
+        inject(bytes)
+    }
 }
 
 // MARK: - ManagedCriticalState (minimal backport)

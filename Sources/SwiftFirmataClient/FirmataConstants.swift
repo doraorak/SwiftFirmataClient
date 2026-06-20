@@ -96,6 +96,7 @@ enum Sched {
     static let errorReply:    UInt8 = 0x08
     static let queryAllReply: UInt8 = 0x09
     static let queryReply:    UInt8 = 0x0A
+    static let httpReply:     UInt8 = 0x0B  // device -> host: HTTP status + body
 
     // Logic extension (see NONSTANDARD.md). Carried under the standard scheduler's
     // reserved extension command (0x7F), so a base scheduler ignores it cleanly.
@@ -105,4 +106,5 @@ enum Sched {
     static let extReadAnalog:  UInt8 = 0x12  // R[d] = analogRead(channel)
     static let extIf:          UInt8 = 0x13  // if !(a op b) skip N bytes
     static let extSkip:        UInt8 = 0x14  // unconditional skip N bytes
+    static let extHttp:        UInt8 = 0x15  // make an HTTP(S) request over Wi-Fi
 }

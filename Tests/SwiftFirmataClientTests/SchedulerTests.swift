@@ -36,9 +36,9 @@ struct SchedulerTests {
     @Test func recorderBuildsLiveByteStream() {
         var r = FirmataTaskRecorder()
         r.setPinMode(2, mode: .output)
-        r.digitalWrite(pin: 2, value: true)
+        r.digitalWrite(pin: 2, high: true)
         r.delay(ms: 1500)
-        r.digitalWrite(pin: 2, value: false)
+        r.digitalWrite(pin: 2, high: false)
         let delayMsg: [UInt8] = [0xF0, 0x7B, 0x03] + encode7BitFirmata(timeBytes(1500)) + [0xF7]
         var expected: [UInt8] = [0xF4, 2, 0x01, 0xF5, 2, 0x01]
         expected += delayMsg
@@ -105,7 +105,7 @@ struct SchedulerTests {
         try await completeUpload(t) {
             try await c.uploadTask(id: 1, startDelayMs: 0) { task in
                 task.setPinMode(2, mode: .output)
-                task.digitalWrite(pin: 2, value: true)
+                task.digitalWrite(pin: 2, high: true)
             }
         }
         // delete, create(len=6), add, schedule, queryAll (confirmation)
@@ -122,18 +122,18 @@ struct SchedulerTests {
         try await completeUpload(t) {
             try await c.uploadTask(id: 2, repeatEveryMs: 500) { task in
                 task.setPinMode(2, mode: .output)
-                task.digitalWrite(pin: 2, value: true)
+                task.digitalWrite(pin: 2, high: true)
                 task.delay(ms: 500)
-                task.digitalWrite(pin: 2, value: false)
+                task.digitalWrite(pin: 2, high: false)
             }
         }
         // The reserved length must equal the recorded bytes including BOTH the
         // in-sequence delay and the trailing repeat delay.
         var recorder = FirmataTaskRecorder()
         recorder.setPinMode(2, mode: .output)
-        recorder.digitalWrite(pin: 2, value: true)
+        recorder.digitalWrite(pin: 2, high: true)
         recorder.delay(ms: 500)
-        recorder.digitalWrite(pin: 2, value: false)
+        recorder.digitalWrite(pin: 2, high: false)
         recorder.delay(ms: 500)   // trailing -> loop
         let expectedLen = recorder.bytes.count
 

@@ -27,8 +27,8 @@ struct SchedulerLogicTests {
     @Test func ifElseLaysOutSkipsCorrectly() {
         var r = FirmataTaskRecorder()
         r.ifTrue(.reg(0), .greaterThan, .const(512),
-            then:   { $0.digitalWrite(pin: 2, value: true) },
-            elseDo: { $0.digitalWrite(pin: 2, value: false) })
+            then:   { $0.digitalWrite(pin: 2, high: true) },
+            elseDo: { $0.digitalWrite(pin: 2, high: false) })
 
         // IF (op=3 greaterThan) reg0 vs const512, skip=10 (then-block + trailing SKIP)
         // then: digitalWrite(2,HIGH) [3]  +  SKIP 3 (over else) [7]   = 10 bytes
@@ -47,7 +47,7 @@ struct SchedulerLogicTests {
 
     @Test func ifWithoutElseHasNoTrailingSkip() {
         var r = FirmataTaskRecorder()
-        r.ifTrue(.reg(1), .equal, .reg(2)) { $0.digitalWrite(pin: 5, value: true) }
+        r.ifTrue(.reg(1), .equal, .reg(2)) { $0.digitalWrite(pin: 5, high: true) }
         // IF op=0(equal) reg1 vs reg2, skip = 3 (just the then-block), no SKIP message
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x13, 0x00,   // EXT IF equal
@@ -62,7 +62,7 @@ struct SchedulerLogicTests {
     @Test func nestedIfSkipCountsIncludeInnerBytes() {
         var r = FirmataTaskRecorder()
         r.ifTrue(.reg(0), .greaterThan, .const(0)) { t in
-            t.ifTrue(.reg(1), .lessThan, .const(10)) { $0.digitalWrite(pin: 2, value: true) }
+            t.ifTrue(.reg(1), .lessThan, .const(10)) { $0.digitalWrite(pin: 2, high: true) }
         }
         // Inner if (no else): IF message [16: F0 7B 7F 13 op + a(reg,2) + b(const,6)
         // + skip2 + F7] + then digitalWrite [3] = 19 bytes. The outer if's skip must

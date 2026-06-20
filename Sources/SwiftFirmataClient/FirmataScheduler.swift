@@ -30,7 +30,7 @@ public struct SchedulerTask: Sendable {
 /// try await client.uploadTask(id: 1) { t in
 /// //                                  ^ this is the recorder
 ///     t.setPinMode(2, mode: .output)
-///     t.digitalWrite(pin: 2, value: true)
+///     t.digitalWrite(pin: 2, high: true)
 /// }
 /// ```
 ///
@@ -49,6 +49,10 @@ public struct FirmataTaskRecorder: Sendable {
     /// directly — `uploadTask` reads it for you.
     public private(set) var bytes: [UInt8] = []
 
+    /// Next register handed out by ``digitalRead(pin:)`` / ``analogRead(channel:)``
+    /// (descends `R15 → R0`, then wraps).
+    private var nextAutoRegister: UInt8 = 15
+
     public init() {}
 
     /// Record a pin-mode change (e.g. `.output` before writing it).
@@ -62,9 +66,9 @@ public struct FirmataTaskRecorder: Sendable {
     /// Record driving a pin HIGH or LOW (the pin must be in `.output` mode).
     /// - Parameters:
     ///   - pin: The board pin number to drive.
-    ///   - value: `true` for HIGH, `false` for LOW.
-    public mutating func digitalWrite(pin: UInt8, value: Bool) {
-        bytes += [Cmd.setDigitalPinValue, pin, value ? 0x01 : 0x00]
+    ///   - high: `true` for HIGH, `false` for LOW.
+    public mutating func digitalWrite(pin: UInt8, high: Bool) {
+        bytes += [Cmd.setDigitalPinValue, pin, high ? 0x01 : 0x00]
     }
 
     /// Record writing all eight pins of a port at once (output pins only).
@@ -75,12 +79,12 @@ public struct FirmataTaskRecorder: Sendable {
         bytes += [Cmd.digitalMessage | (port & 0x0F), pinMask & 0x7F, (pinMask >> 7) & 0x01]
     }
 
-    /// Record a PWM write to a pin (0-15) in `.pwm` mode.
+    /// Record a PWM write to a channel (0-15) in `.pwm` mode.
     /// - Parameters:
-    ///   - pin: The PWM-capable pin number (0-15).
+    ///   - channel: The PWM channel (pin number for 0-15).
     ///   - value: Duty cycle within the pin's PWM resolution (e.g. `0`-`255`).
-    public mutating func analogWrite(pin: UInt8, value: UInt16) {
-        bytes += [Cmd.analogMessage | (pin & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
+    public mutating func analogWrite(channel: UInt8, value: UInt16) {
+        bytes += [Cmd.analogMessage | (channel & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
     }
 
     /// Record a pause — the device waits this long before the next recorded action.
@@ -140,6 +144,44 @@ public struct FirmataTaskRecorder: Sendable {
                   register & 0x0F, channel & 0x0F, Cmd.endSysEx]
     }
 
+    /// Record `digitalRead(pin)` into an **auto-allocated** register and return that
+    /// register as a ``SchedulerOperand`` — so you can drop the read straight into a
+    /// comparison. (A recorder can't return a live value; the read happens on the
+    /// device when the task runs, and this hands you the register it lands in.)
+    ///
+    /// ```swift
+    /// let pressed = t.digitalRead(pin: 7)              // -> .reg(n)
+    /// t.ifTrue(pressed, .equal, .const(0),             // active-low button
+    ///     then: { $0.digitalWrite(pin: 2, high: true) })
+    /// ```
+    ///
+    /// Auto-allocated registers cycle `R15 → R0`; for explicit control use
+    /// ``readDigital(into:pin:)``. Read into a local first if you'll reuse it, since
+    /// a later auto-read may reuse the same register.
+    /// - Parameter pin: The board pin to read (put it in `.input`/`.inputPullup` first).
+    /// - Returns: The register operand holding `0`/`1`.
+    public mutating func digitalRead(pin: UInt8) -> SchedulerOperand {
+        let r = allocateRegister(); readDigital(into: r, pin: pin); return .reg(r)
+    }
+
+    /// Record `analogRead(channel)` into an **auto-allocated** register and return
+    /// that register as a ``SchedulerOperand`` for use in
+    /// ``ifTrue(_:_:_:then:elseDo:)``. See ``digitalRead(pin:)`` for the allocation
+    /// rules; use ``readAnalog(into:channel:)`` to choose the register yourself.
+    /// - Parameter channel: Analog channel index (`A0 = 0`, …), **not** a pin number.
+    /// - Returns: The register operand holding the reading.
+    public mutating func analogRead(channel: UInt8) -> SchedulerOperand {
+        let r = allocateRegister(); readAnalog(into: r, channel: channel); return .reg(r)
+    }
+
+    /// Hand out the next auto-allocated register, descending `R15 → R0` then wrapping
+    /// (kept high to avoid clashing with low registers you set explicitly).
+    private mutating func allocateRegister() -> UInt8 {
+        let r = nextAutoRegister
+        nextAutoRegister = (nextAutoRegister == 0) ? 15 : (nextAutoRegister - 1)
+        return r
+    }
+
     /// Record an `if` (optionally with `else`) that the **device** evaluates while
     /// the task runs. It compares the two operands with `op`; the `then` block runs
     /// only when the comparison is true, otherwise the `elseDo` block (if given) runs.
@@ -147,8 +189,8 @@ public struct FirmataTaskRecorder: Sendable {
     /// ```swift
     /// t.readAnalog(into: 0, channel: 0)                    // R0 = analog A0
     /// t.ifTrue(.reg(0), .greaterThan, .const(512),         // if R0 > 512
-    ///     then:   { b in b.digitalWrite(pin: 2, value: true) },   // …LED on
-    ///     elseDo: { b in b.digitalWrite(pin: 2, value: false) })  // …else off
+    ///     then:   { b in b.digitalWrite(pin: 2, high: true) },   // …LED on
+    ///     elseDo: { b in b.digitalWrite(pin: 2, high: false) })  // …else off
     /// ```
     ///
     /// Each branch is itself a recorder closure: the `b` (or shorthand `$0`) passed
@@ -188,6 +230,55 @@ public struct FirmataTaskRecorder: Sendable {
         bytes += Self.ifMessage(a, op, b, skipBytes: thenBytes.count)
         bytes += thenBytes
         bytes += elseBytes
+    }
+
+    /// Record an **internet request** the device makes over its own Wi-Fi while
+    /// the task runs (non-standard extension). The device performs the HTTP(S)
+    /// `GET`, then stores results in two registers so later ``ifTrue(_:_:_:then:elseDo:)``
+    /// steps can branch on them — so a task can react to data from the internet
+    /// with no host connected:
+    ///
+    /// - `R[statusInto]` ← the HTTP status code (`200`, `404`, …; `0` if Wi-Fi is
+    ///   down or the request failed).
+    /// - `R[valueInto]` ← the first integer found in the response body (`0` if none).
+    ///   Handy when an endpoint returns a number (a price, count, sensor value…).
+    ///
+    /// If a host happens to be connected while the task runs, the full status +
+    /// body are also delivered to it as ``FirmataMessage/httpResponse(status:body:)``.
+    ///
+    /// ```swift
+    /// // Turn on pin 2 only when an endpoint reports a value over 100.
+    /// try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
+    ///     t.setPinMode(2, mode: .output)
+    ///     t.httpGet("http://example.com/sensor", statusInto: 0, valueInto: 1)
+    ///     t.ifTrue(.reg(1), .greaterThan, .const(100),
+    ///         then:   { $0.digitalWrite(pin: 2, high: true) },
+    ///         elseDo: { $0.digitalWrite(pin: 2, high: false) })
+    /// }
+    /// ```
+    ///
+    /// - Important: The URL must be ASCII and short enough to fit one SysEx frame
+    ///   (URL + body ≲ 500 bytes). The request **blocks the device** until it
+    ///   completes (up to ~8 s), so keep request-bearing tasks infrequent.
+    /// - Parameters:
+    ///   - url: The `http://` or `https://` URL to fetch (TLS is not certificate-verified).
+    ///   - statusInto: Register (`0`–`15`) to receive the HTTP status code.
+    ///   - valueInto: Register (`0`–`15`) to receive the first integer in the body.
+    public mutating func httpGet(_ url: String, statusInto: UInt8, valueInto: UInt8) {
+        bytes += httpOpBytes(method: 0, statusReg: statusInto, valueReg: valueInto, url: url, body: nil)
+    }
+
+    /// Record an **internet `POST`** the device makes over Wi-Fi while the task
+    /// runs (non-standard extension). The `body` is sent with
+    /// `Content-Type: application/json`. Results land in registers exactly as for
+    /// ``httpGet(_:statusInto:valueInto:)``.
+    /// - Parameters:
+    ///   - url: The `http://`/`https://` URL to post to (ASCII; TLS not verified).
+    ///   - body: The request body (e.g. a JSON string). ASCII.
+    ///   - statusInto: Register (`0`–`15`) to receive the HTTP status code.
+    ///   - valueInto: Register (`0`–`15`) to receive the first integer in the response.
+    public mutating func httpPost(_ url: String, body: String, statusInto: UInt8, valueInto: UInt8) {
+        bytes += httpOpBytes(method: 1, statusReg: statusInto, valueReg: valueInto, url: url, body: body)
     }
 
     // MARK: Extension byte builders
@@ -234,6 +325,25 @@ public enum SchedulerComparison: UInt8, Sendable {
     case greaterThan    = 3
     case lessOrEqual    = 4
     case greaterOrEqual = 5
+}
+
+// MARK: - Internet-action op encoding (non-standard extension)
+
+/// Encode a `SCHED_EXT_HTTP` op (used both inside tasks and for live requests).
+/// Layout: `F0 7B 7F 15 method statusReg valueReg urlLo urlHi url[…] bodyLo bodyHi body[…] F7`.
+/// URL/body are sent as raw 7-bit ASCII; lengths are 14-bit little-endian.
+func httpOpBytes(method: UInt8, statusReg: UInt8, valueReg: UInt8,
+                 url: String, body: String?) -> [UInt8] {
+    let u = Array(url.utf8)
+    let b = Array((body ?? "").utf8)
+    var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extHttp,
+                      method, statusReg & 0x0F, valueReg & 0x0F]
+    m += [UInt8(u.count & 0x7F), UInt8((u.count >> 7) & 0x7F)]
+    m += u.map { $0 & 0x7F }
+    m += [UInt8(b.count & 0x7F), UInt8((b.count >> 7) & 0x7F)]
+    m += b.map { $0 & 0x7F }
+    m.append(Cmd.endSysEx)
+    return m
 }
 
 // MARK: - Encoder7Bit (8-bit data packed into 7-bit bytes)

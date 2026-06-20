@@ -114,6 +114,13 @@ public struct FirmataParser: Sendable {
             guard let id = body.first else { return nil }
             return .schedulerError(taskId: id)
 
+        case Sched.httpReply:
+            // status (14-bit LE) followed by the body as 14-bit LSB/MSB pairs.
+            guard body.count >= 2 else { return .httpResponse(status: 0, body: "") }
+            let status = Int(body[0]) | (Int(body[1]) << 7)
+            let text = decode7BitPairs(Array(body.dropFirst(2)))
+            return .httpResponse(status: status, body: text)
+
         case Sched.queryReply:
             guard let id = body.first else { return nil }
             // payload (7-bit packed) = time_ms(4 LE) + len(2 LE) + pos(2 LE) + data[len]

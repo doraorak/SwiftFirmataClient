@@ -56,6 +56,11 @@ public actor FirmataClient {
     private var pendingQueryAllTasks: CheckedContinuation<[UInt8], Error>?
     private var pendingQueryTask:     [UInt8: CheckedContinuation<SchedulerTask?, Error>] = [:]
 
+    // Live internet requests (non-standard extension). Keyed by a sequence id so a
+    // timeout cancels the exact waiter; replies are matched oldest-first (FIFO).
+    private var httpSeq: UInt64 = 0
+    private var pendingHttp: [UInt64: CheckedContinuation<HTTPResponse, Error>] = [:]
+
     // One-shot live reads (Firmata has no synchronous read; we enable reporting
     // and await the next sample). Keyed by a sequence id so a timeout can cancel
     // the exact waiter.
@@ -169,6 +174,13 @@ public actor FirmataClient {
             // A query for a non-existent task replies with an error -> nil.
             pendingQueryTask.removeValue(forKey: taskId)?.resume(returning: nil)
 
+        case .httpResponse(let status, let body):
+            // Match the oldest in-flight live request (FIFO).
+            if let key = pendingHttp.keys.min() {
+                pendingHttp.removeValue(forKey: key)?
+                    .resume(returning: HTTPResponse(status: status, body: body))
+            }
+
         default:
             break
         }
@@ -190,12 +202,14 @@ public actor FirmataClient {
         pendingDigitalRead.removeAll()
         for w in pendingAnalogRead.values { w.cont.resume(throwing: error) }
         pendingAnalogRead.removeAll()
+        for cont in pendingHttp.values { cont.resume(throwing: error) }
+        pendingHttp.removeAll()
     }
 
     // MARK: - Digital I/O
 
     /// Set a pin's operating mode. Do this before reading or writing the pin —
-    /// e.g. `.output` before ``digitalWrite(pin:value:)``, `.analog` before
+    /// e.g. `.output` before ``digitalWrite(pin:high:)``, `.analog` before
     /// ``analogRead(channel:timeout:)``.
     ///
     /// ```swift
@@ -214,13 +228,13 @@ public actor FirmataClient {
     ///
     /// - Parameters:
     ///   - pin: The board pin number to drive.
-    ///   - value: `true` for HIGH (logic 1), `false` for LOW (logic 0).
-    public func digitalWrite(pin: UInt8, value: Bool) async throws {
-        try await transport.send([Cmd.setDigitalPinValue, pin, value ? 0x01 : 0x00])
+    ///   - high: `true` for HIGH (logic 1), `false` for LOW (logic 0).
+    public func digitalWrite(pin: UInt8, high: Bool) async throws {
+        try await transport.send([Cmd.setDigitalPinValue, pin, high ? 0x01 : 0x00])
     }
 
     /// Write all eight pins of a digital port in one message — faster than eight
-    /// ``digitalWrite(pin:value:)`` calls. Only pins in `.output` mode are affected.
+    /// ``digitalWrite(pin:high:)`` calls. Only pins in `.output` mode are affected.
     ///
     /// - Parameters:
     ///   - port: The 8-pin group: `0` = pins 0-7, `1` = pins 8-15, and so on.
@@ -286,21 +300,23 @@ public actor FirmataClient {
 
     // MARK: - Analog I/O
 
-    /// Write an analog (PWM) value to a pin in `.pwm` mode. Pins 0-15 use the
-    /// standard analog message; higher pins or values wider than 14 bits fall back
-    /// to the extended-analog SysEx automatically.
+    /// Write an analog (PWM) value to a channel in `.pwm` mode. Channels 0-15 use
+    /// the standard analog message; higher channels or values wider than 14 bits
+    /// fall back to the extended-analog SysEx automatically.
     ///
+    /// - Note: For Firmata PWM the "channel" is the pin's analog-message channel,
+    ///   which for pins 0-15 is the pin number itself.
     /// - Parameters:
-    ///   - pin: The PWM-capable board pin number.
+    ///   - channel: The PWM channel (pin number for 0-15).
     ///   - value: Duty cycle as an unsigned integer. Its full-scale range is the
     ///     pin's PWM resolution from the capability response (e.g. `0`-`255` for an
     ///     8-bit pin, `0`-`1023` for 10-bit).
-    public func analogWrite(pin: UInt8, value: UInt16) async throws {
-        if pin < 16 {
-            let cmd: UInt8 = Cmd.analogMessage | (pin & 0x0F)
+    public func analogWrite(channel: UInt8, value: UInt16) async throws {
+        if channel < 16 {
+            let cmd: UInt8 = Cmd.analogMessage | (channel & 0x0F)
             try await transport.send([cmd, UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)])
         } else {
-            try await extendedAnalogWrite(pin: pin, value: Int32(value))
+            try await extendedAnalogWrite(pin: channel, value: Int32(value))
         }
     }
 
@@ -400,6 +416,55 @@ public actor FirmataClient {
         }
         bytes.append(Cmd.endSysEx)
         try await transport.send(bytes)
+    }
+
+    // MARK: - Internet actions (non-standard extension)
+    //
+    // Ask the device to make an HTTP(S) request over *its* Wi-Fi and return the
+    // result here. Same op the scheduler uses, sent live: the firmware blocks
+    // briefly while it performs the request, then replies with status + body.
+    // (For requests that keep running after you disconnect, record
+    // ``FirmataTaskRecorder/httpGet(_:statusInto:valueInto:)`` into a task instead.)
+
+    /// Have the device perform an HTTP(S) `GET` and return the result.
+    /// - Parameters:
+    ///   - url: The `http://`/`https://` URL (ASCII; TLS is not certificate-verified).
+    ///   - timeout: How long to wait for the device's reply before giving up.
+    /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
+    public func httpGet(_ url: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
+        try await sendHttpAndAwait(
+            httpOpBytes(method: 0, statusReg: 15, valueReg: 14, url: url, body: nil), timeout: timeout)
+    }
+
+    /// Have the device perform an HTTP(S) `POST` (`Content-Type: application/json`)
+    /// and return the result.
+    /// - Parameters:
+    ///   - url: The `http://`/`https://` URL (ASCII; TLS is not certificate-verified).
+    ///   - body: The request body (e.g. JSON). ASCII.
+    ///   - timeout: How long to wait for the device's reply before giving up.
+    /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
+    public func httpPost(_ url: String, body: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
+        try await sendHttpAndAwait(
+            httpOpBytes(method: 1, statusReg: 15, valueReg: 14, url: url, body: body), timeout: timeout)
+    }
+
+    private func sendHttpAndAwait(_ bytes: [UInt8], timeout: Duration) async throws -> HTTPResponse {
+        let id = httpSeq; httpSeq &+= 1
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingHttp[id] = continuation
+            Task {
+                do {
+                    try await self.transport.send(bytes)
+                } catch {
+                    if let c = self.pendingHttp.removeValue(forKey: id) { c.resume(throwing: error) }
+                    return
+                }
+                try? await Task.sleep(for: timeout)
+                if let c = self.pendingHttp.removeValue(forKey: id) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
+            }
+        }
     }
 
     // MARK: - Queries
@@ -578,9 +643,9 @@ public actor FirmataClient {
     ///     // Blink pin 2 every 500 ms — runs on the device, survives disconnect.
     ///     try await client.uploadTask(id: 2, startDelayMs: 0, repeatEveryMs: 500) { t in
     ///         t.setPinMode(2, mode: .output)   // recorded, not sent now
-    ///         t.digitalWrite(pin: 2, value: true)
+    ///         t.digitalWrite(pin: 2, high: true)
     ///         t.delay(ms: 500)                 // the board waits 500 ms here
-    ///         t.digitalWrite(pin: 2, value: false)
+    ///         t.digitalWrite(pin: 2, high: false)
     ///     }
     ///     await client.disconnect()            // the LED keeps blinking
     /// }

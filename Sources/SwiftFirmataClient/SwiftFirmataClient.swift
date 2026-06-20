@@ -7,7 +7,7 @@
 /// await client.connect()
 ///
 /// try await client.setPinMode(13, mode: .output)
-/// try await client.digitalWrite(pin: 13, value: true)
+/// try await client.digitalWrite(pin: 13, high: true)
 ///
 /// let fw = try await client.queryFirmware()
 /// print("\(fw.name) v\(fw.major).\(fw.minor)")

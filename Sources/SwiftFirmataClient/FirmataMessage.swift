@@ -41,6 +41,12 @@ public enum FirmataMessage: Sendable {
     /// Scheduler error (e.g. a query for a task id that does not exist).
     case schedulerError(taskId: UInt8)
 
+    /// Result of an internet request made by the device (non-standard extension):
+    /// the HTTP status code (`0` on error) and the response body. Delivered when a
+    /// task's ``FirmataTaskRecorder/httpGet(_:statusInto:valueInto:)`` runs while a
+    /// host is connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
+    case httpResponse(status: Int, body: String)
+
     /// Unrecognised SysEx message.
     case unknownSysEx(id: UInt8, data: [UInt8])
 }
@@ -80,4 +86,15 @@ public struct I2CReply: Sendable {
     public let address: UInt16
     public let register: UInt16
     public let data: [UInt8]
+}
+
+/// Result of an internet request the device made over its Wi-Fi
+/// (non-standard extension). Returned by ``FirmataClient/httpGet(_:timeout:)``
+/// and ``FirmataClient/httpPost(_:body:timeout:)``.
+public struct HTTPResponse: Sendable {
+    /// HTTP status code (`200`, `404`, …), or `0` if the device's Wi-Fi was down
+    /// or the request failed.
+    public let status: Int
+    /// The response body (truncated by the device to a few hundred bytes).
+    public let body: String
 }
