@@ -178,57 +178,83 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
 ### Internet actions (scheduler extension)
 
 A task can also **reach the internet over the board's Wi-Fi** — make an HTTP(S)
-request and act on the result — so the device can talk to web services on its
-own, with no host connected:
+request and inspect the response — so the device can talk to web services on its
+own, with no host connected. `https://` is supported with **on-device
+certificate validation** (a browser-style root-CA bundle).
+
+The request stores only the **HTTP status** in a register; the response **body is
+retained on the device**, and you pull values out of it with the inspection ops
+(`jsonNumber`, `jsonStringEquals`, `jsonStringContains`, `bodyContains`), which
+return register operands you can branch on:
 
 ```swift
-// Every minute, fetch a number from an endpoint and drive pin 2 when it's high.
+// Every minute: green LED if SPY is up on the day, red if it's down — no host.
 try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
-    t.setPinMode(2, mode: .output)
-    t.httpGet("http://example.com/sensor", statusInto: 0, valueInto: 1)
-    t.ifTrue(.reg(1), .greaterThan, .const(100),         // body's first number > 100?
-        then:   { $0.digitalWrite(pin: 2, high: true) },
-        elseDo: { $0.digitalWrite(pin: 2, high: false) })
+    t.setPinMode(2, mode: .output); t.setPinMode(4, mode: .output)
+    t.httpGet("https://example.com/quote/SPY", statusInto: 0)
+    // Pull a fractional JSON number into an Int32 register, scaled (×100):
+    //   -0.42  ->  -42 ;  path may be dotted/indexed: "result[0].changePercent"
+    let pct = t.jsonNumber("changePercent", scaledBy: 2)
+    t.ifTrue(pct, .greaterThan, .const(0),
+        then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
+        elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
 }
 ```
 
-- `httpGet(_:statusInto:valueInto:)` / `httpPost(_:body:statusInto:valueInto:)`.
-  The device stores the **HTTP status** in `R[statusInto]` (`0` = Wi-Fi down /
-  failure) and the **first integer found in the response body** in `R[valueInto]`,
-  so later `ifTrue` steps can branch on internet data.
+- `httpGet(_:statusInto:)` / `httpPost(_:body:statusInto:)` — `R[statusInto]` =
+  HTTP status (`0` = Wi-Fi down / failure). The body is kept for inspection.
+- Inspection ops (operate on the **last** response body), each returns the result
+  register as a `SchedulerOperand` for `ifTrue` (destination auto-allocated R15↓,
+  or pass `into:`):
+  - `jsonNumber(_ path:, scaledBy:, into:, found:)` — number at `path` × 10ⁿ
+    (truncated, so fractions survive in the Int32). `found` register is `1`/`0`.
+  - `jsonStringEquals(_ path:, _ value:)` / `jsonStringContains(_ path:, _ sub:)`
+    — compare the JSON string at `path`. Result `1`/`0`.
+  - `bodyContains(_ text:)` — raw substring search over the whole body. `1`/`0`.
+  - `path` is dotted with array indices: `quoteResponse.result[0].regularMarketChangePercent`.
 - If a host is connected while the task runs, the full result also arrives as
   `FirmataMessage.httpResponse(status:body:)` on the `messages` stream.
 
-You can also fire a request **live** and await its result directly:
+You can also fire a request **live** and inspect it on the host with Foundation:
 
 ```swift
-let r = try await client.httpGet("http://worldtimeapi.org/api/timezone/Etc/UTC")
-print(r.status, r.body)                          // e.g. 200, {"...":"..."}
-let p = try await client.httpPost("http://example.com/log", body: #"{"on":true}"#)
+let r = try await client.httpGet("https://jsonplaceholder.typicode.com/todos/1")
+print(r.status, r.isSuccess)                     // 200 true
+
+struct Todo: Decodable { let id: Int; let title: String; let completed: Bool }
+let todo = try r.decode(Todo.self)               // typed decode
+let any  = try r.json() as? [String: Any]        // or untyped JSONSerialization
+
+let p = try await client.httpPost("https://example.com/log", body: #"{"on":true}"#)
 ```
 
 - The device performs the request and **blocks briefly** (up to ~8 s) while it
   does; `httpGet`/`httpPost` take a `timeout` (default 15 s).
 - **URL/body must be ASCII** and fit one SysEx frame (URL + body ≲ 500 bytes).
-- The body returned to the host is truncated by the device to a few hundred bytes
-  (it's meant for status/short JSON, not large downloads).
-- **HTTP only** in this build — `https://` needs the firmware's TLS (SSL) client
-  enabled (see the firmware README).
+- The body returned to the host is capped at **~4 KB** (enough for typical JSON
+  API responses; not for large downloads).
+- **`https://` is certificate-validated on-device** against the firmware's bundled
+  root CAs (requires firmware with the TLS client; see the firmware README).
 
 #### Custom protocol — wire format (byte commands)
 
 The logic ops are SysEx embedded in a task's data and replayed by the Scheduler,
 under `SCHEDULER_DATA` (`0x7B`) → `EXTENDED_SCHEDULER_COMMAND` (`0x7F`). `<const>`
 is an Int32 packed as 5 Encoder7Bit bytes; `<skip>` is a 14-bit count,
-little-endian 7-bit (`skipLo skipHi`).
+little-endian 7-bit (`skipLo skipHi`). `<len>` fields are 14-bit LE (`lo hi`);
+`<path>`/`<str>`/`<url>`/`<body>` are raw 7-bit ASCII.
 
 ```
-SET           F0 7B 7F 10 <reg> <const:5>                     F7   // R[reg] = const
-READ_DIGITAL  F0 7B 7F 11 <reg> <pin>                         F7   // R[reg] = digitalRead(pin)
-READ_ANALOG   F0 7B 7F 12 <reg> <channel>                     F7   // R[reg] = analogRead(channel)
-IF            F0 7B 7F 13 <op> <operandA> <operandB> <skip:2> F7   // if !(A op B): pos += skip
-SKIP          F0 7B 7F 14 <skip:2>                            F7   // pos += skip (else)
-HTTP          F0 7B 7F 15 <method> <statusReg> <valueReg> <urlLen:2> <url…> <bodyLen:2> <body…> F7
+SET            F0 7B 7F 10 <reg> <const:5>                          F7  // R[reg] = const
+READ_DIGITAL   F0 7B 7F 11 <reg> <pin>                              F7  // R[reg] = digitalRead(pin)
+READ_ANALOG    F0 7B 7F 12 <reg> <channel>                          F7  // R[reg] = analogRead(channel)
+IF             F0 7B 7F 13 <op> <operandA> <operandB> <skip:2>      F7  // if !(A op B): pos += skip
+SKIP           F0 7B 7F 14 <skip:2>                                 F7  // pos += skip (else)
+HTTP           F0 7B 7F 15 <method> <statusReg> <urlLen:2> <url…> <bodyLen:2> <body…> F7
+JSON_NUM       F0 7B 7F 16 <dst> <found> <scale> <pathLen:2> <path…>     F7
+JSON_STR_EQ    F0 7B 7F 17 <dst> <pathLen:2> <path…> <strLen:2> <str…>   F7
+BODY_CONTAINS  F0 7B 7F 18 <dst> <strLen:2> <str…>                       F7
+JSON_STR_CONT  F0 7B 7F 19 <dst> <pathLen:2> <path…> <strLen:2> <str…>   F7
 ```
 
 - `<reg>`: register index, low nibble (`0`–`15`).
@@ -237,11 +263,12 @@ HTTP          F0 7B 7F 15 <method> <statusReg> <valueReg> <urlLen:2> <url…> <b
 - `if`/`else` layout: `[IF skip=thenLen] [then…] [SKIP skip=elseLen] [else…]` — a
   false `IF` skips the then-block (landing on `else`); a true one runs `then`,
   whose trailing `SKIP` jumps over `else`.
-- `HTTP` (`0x15`): `<method>` `0`=GET `1`=POST; `<statusReg>`/`<valueReg>` are
-  register indices; `<urlLen>`/`<bodyLen>` are 14-bit little-endian (`lo hi`);
-  `<url>`/`<body>` are raw 7-bit ASCII. The device sets `R[statusReg]` = HTTP
-  status (`0` on failure) and `R[valueReg]` = first integer in the body. POST
-  sends `Content-Type: application/json`.
+- `HTTP` (`0x15`): `<method>` `0`=GET `1`=POST; sets `R[statusReg]` = HTTP status
+  (`0` on failure) and retains the body. POST sends `Content-Type: application/json`.
+- `JSON_NUM` (`0x16`): `R[dst]` = number at `<path>` × 10^`<scale>` (truncated),
+  `R[found]` = `1`/`0`. `JSON_STR_EQ`/`JSON_STR_CONT` (`0x17`/`0x19`): `R[dst]` =
+  `1`/`0` from comparing the JSON string at `<path>`. `BODY_CONTAINS` (`0x18`):
+  `R[dst]` = `1`/`0` substring search over the whole body.
 
 The device replies (only when a host is connected) with the result:
 
@@ -302,7 +329,9 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 `digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)` — plus the
 **extension¹** ops: `setRegister`, `readDigital(into:)`/`digitalRead(pin:)`,
 `readAnalog(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
-`httpGet(_:statusInto:valueInto:)`, `httpPost(_:body:statusInto:valueInto:)`.
+`httpGet(_:statusInto:)`, `httpPost(_:body:statusInto:)`, and the response-inspection
+ops `jsonNumber(_:scaledBy:into:found:)`, `jsonStringEquals(_:_:into:)`,
+`jsonStringContains(_:_:into:)`, `bodyContains(_:into:)`.
 
 > **¹ Non-standard extension — requires supported firmware.** The on-device logic
 > (registers / `if`-`else`) and internet actions are **not part of standard Firmata**.
@@ -339,16 +368,20 @@ public protocol FirmataTransport: Sendable {
    unsupported firmware simply times out; a logic task degrades to its no-op
    parts.
 
-**Firmware that supports the extension** (both byte-for-byte compatible with this
-client, both implement the logic extension **and** internet actions):
+**Firmware that supports the extension** (both implement the logic extension,
+internet actions, and the JSON/string response-inspection ops — same wire format):
 
-- [**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) — the Arduino/C++
-  sketch for the original ESP32 (Wi-Fi/TCP + Bonjour **and** BLE in one build).
 - [**ESP32FirmataSwift**](https://github.com/doraorak/ESP32FirmataSwift) — an
-  Embedded-Swift port of the same firmware.
+  Embedded-Swift firmware for the original ESP32. **`https://` (cert-validated) works
+  alongside Wi-Fi + BLE.**
+- [**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) — the Arduino/C++
+  sketch (Wi-Fi/TCP + Bonjour **and** BLE in one build).
 
-> Internet actions need Wi-Fi on the board and currently support **`http://` only**
-> (`https://` needs a TLS client built into the firmware — see the firmware READMEs).
+> **HTTPS heap note (C++ firmware only).** On the Arduino/C++ **ESP32Firmata**, the
+> dual Wi-Fi + BLE build leaves too little heap for the Arduino core's TLS buffers,
+> so `https://` works only in its **Wi-Fi-only build** (`http://` and all the JSON/
+> string ops work in every build). For `https://` **with** BLE, use the
+> **ESP32FirmataSwift** firmware. See its README for details.
 
 For the built-in transports the device should:
 

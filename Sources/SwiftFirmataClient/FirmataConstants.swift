@@ -107,4 +107,9 @@ enum Sched {
     static let extIf:          UInt8 = 0x13  // if !(a op b) skip N bytes
     static let extSkip:        UInt8 = 0x14  // unconditional skip N bytes
     static let extHttp:        UInt8 = 0x15  // make an HTTP(S) request over Wi-Fi
+    // Response-inspection ops (operate on the last HTTP response body):
+    static let extJsonNum:     UInt8 = 0x16  // R[dst] = json number at path ×10^scale; R[found]
+    static let extJsonStrEq:   UInt8 = 0x17  // R[dst] = (json string at path == s) ? 1 : 0
+    static let extBodyContains: UInt8 = 0x18 // R[dst] = body contains s ? 1 : 0
+    static let extJsonStrContains: UInt8 = 0x19 // R[dst] = (json string at path contains s) ? 1 : 0
 }

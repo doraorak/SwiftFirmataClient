@@ -424,28 +424,30 @@ public actor FirmataClient {
     // result here. Same op the scheduler uses, sent live: the firmware blocks
     // briefly while it performs the request, then replies with status + body.
     // (For requests that keep running after you disconnect, record
-    // ``FirmataTaskRecorder/httpGet(_:statusInto:valueInto:)`` into a task instead.)
+    // ``FirmataTaskRecorder/httpGet(_:statusInto:)`` into a task instead.)
 
-    /// Have the device perform an HTTP(S) `GET` and return the result.
+    /// Have the device perform an HTTP(S) `GET` and return the result. Inspect the
+    /// body on the host with ``HTTPResponse/json()`` / ``HTTPResponse/decode(_:)``.
     /// - Parameters:
-    ///   - url: The `http://`/`https://` URL (ASCII; TLS is not certificate-verified).
+    ///   - url: The `http://`/`https://` URL (ASCII). `https://` certs are validated
+    ///     on-device against the bundled root CAs.
     ///   - timeout: How long to wait for the device's reply before giving up.
     /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
     public func httpGet(_ url: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
         try await sendHttpAndAwait(
-            httpOpBytes(method: 0, statusReg: 15, valueReg: 14, url: url, body: nil), timeout: timeout)
+            httpOpBytes(method: 0, statusReg: 15, url: url, body: nil), timeout: timeout)
     }
 
     /// Have the device perform an HTTP(S) `POST` (`Content-Type: application/json`)
     /// and return the result.
     /// - Parameters:
-    ///   - url: The `http://`/`https://` URL (ASCII; TLS is not certificate-verified).
+    ///   - url: The `http://`/`https://` URL (ASCII; `https://` certs are validated on-device).
     ///   - body: The request body (e.g. JSON). ASCII.
     ///   - timeout: How long to wait for the device's reply before giving up.
     /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
     public func httpPost(_ url: String, body: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
         try await sendHttpAndAwait(
-            httpOpBytes(method: 1, statusReg: 15, valueReg: 14, url: url, body: body), timeout: timeout)
+            httpOpBytes(method: 1, statusReg: 15, url: url, body: body), timeout: timeout)
     }
 
     private func sendHttpAndAwait(_ bytes: [UInt8], timeout: Duration) async throws -> HTTPResponse {

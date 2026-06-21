@@ -1,3 +1,5 @@
+import Foundation
+
 // MARK: - Message enum
 
 /// All messages that can arrive from a Firmata device.
@@ -43,8 +45,8 @@ public enum FirmataMessage: Sendable {
 
     /// Result of an internet request made by the device (non-standard extension):
     /// the HTTP status code (`0` on error) and the response body. Delivered when a
-    /// task's ``FirmataTaskRecorder/httpGet(_:statusInto:valueInto:)`` runs while a
-    /// host is connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
+    /// task's ``FirmataTaskRecorder/httpGet(_:statusInto:)`` runs while a host is
+    /// connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
     case httpResponse(status: Int, body: String)
 
     /// Unrecognised SysEx message.
@@ -95,6 +97,26 @@ public struct HTTPResponse: Sendable {
     /// HTTP status code (`200`, `404`, …), or `0` if the device's Wi-Fi was down
     /// or the request failed.
     public let status: Int
-    /// The response body (truncated by the device to a few hundred bytes).
+    /// The response body (the device retains and returns up to ~4 KB).
     public let body: String
+
+    /// `true` for a 2xx status.
+    public var isSuccess: Bool { (200..<300).contains(status) }
+}
+
+extension HTTPResponse {
+    /// Parse the body as JSON into a foundation object graph
+    /// (`[String: Any]` / `[Any]` / …). Throws if the body isn't valid JSON.
+    public func json(options: JSONSerialization.ReadingOptions = []) throws -> Any {
+        try JSONSerialization.jsonObject(with: Data(body.utf8), options: options)
+    }
+
+    /// Decode the body into a `Decodable` type.
+    /// ```swift
+    /// struct Quote: Decodable { let symbol: String; let price: Double }
+    /// let q = try (await board.httpGet(url)).decode(Quote.self)
+    /// ```
+    public func decode<T: Decodable>(_ type: T.Type, using decoder: JSONDecoder = JSONDecoder()) throws -> T {
+        try decoder.decode(type, from: Data(body.utf8))
+    }
 }

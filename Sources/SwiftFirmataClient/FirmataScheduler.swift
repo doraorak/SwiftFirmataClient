@@ -233,52 +233,107 @@ public struct FirmataTaskRecorder: Sendable {
     }
 
     /// Record an **internet request** the device makes over its own Wi-Fi while
-    /// the task runs (non-standard extension). The device performs the HTTP(S)
-    /// `GET`, then stores results in two registers so later ``ifTrue(_:_:_:then:elseDo:)``
-    /// steps can branch on them — so a task can react to data from the internet
-    /// with no host connected:
+    /// the task runs (non-standard extension; supports `https://` with cert
+    /// validation). The device performs the HTTP(S) `GET`, stores the status in
+    /// `R[statusInto]` (`0` if Wi-Fi is down / it failed), and **retains the full
+    /// response body** for the inspection ops below. If a host is connected, the
+    /// status + body also arrive as ``FirmataMessage/httpResponse(status:body:)``.
     ///
-    /// - `R[statusInto]` ← the HTTP status code (`200`, `404`, …; `0` if Wi-Fi is
-    ///   down or the request failed).
-    /// - `R[valueInto]` ← the first integer found in the response body (`0` if none).
-    ///   Handy when an endpoint returns a number (a price, count, sensor value…).
-    ///
-    /// If a host happens to be connected while the task runs, the full status +
-    /// body are also delivered to it as ``FirmataMessage/httpResponse(status:body:)``.
+    /// Inspect the response with ``jsonNumber(_:scaledBy:into:found:)``,
+    /// ``jsonStringEquals(_:_:into:)``, ``jsonStringContains(_:_:into:)``, or
+    /// ``bodyContains(_:into:)`` — then branch with `ifTrue`:
     ///
     /// ```swift
-    /// // Turn on pin 2 only when an endpoint reports a value over 100.
+    /// // Green/red LED from SPY's % change, no host connected.
     /// try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
-    ///     t.setPinMode(2, mode: .output)
-    ///     t.httpGet("http://example.com/sensor", statusInto: 0, valueInto: 1)
-    ///     t.ifTrue(.reg(1), .greaterThan, .const(100),
-    ///         then:   { $0.digitalWrite(pin: 2, high: true) },
-    ///         elseDo: { $0.digitalWrite(pin: 2, high: false) })
+    ///     t.setPinMode(2, mode: .output); t.setPinMode(4, mode: .output)
+    ///     t.httpGet("https://example.com/quote/SPY", statusInto: 0)
+    ///     let pct = t.jsonNumber("changePercent", scaledBy: 2)   // -0.42% -> -42
+    ///     t.ifTrue(pct, .greaterThan, .const(0),
+    ///         then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
+    ///         elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
     /// }
     /// ```
     ///
-    /// - Important: The URL must be ASCII and short enough to fit one SysEx frame
-    ///   (URL + body ≲ 500 bytes). The request **blocks the device** until it
-    ///   completes (up to ~8 s), so keep request-bearing tasks infrequent.
+    /// - Important: URL must be ASCII and fit one SysEx frame (URL + body ≲ 500 B).
+    ///   The request **blocks the device** (~8 s max); keep request tasks infrequent.
     /// - Parameters:
-    ///   - url: The `http://` or `https://` URL to fetch (TLS is not certificate-verified).
+    ///   - url: The `http://` or `https://` URL to fetch.
     ///   - statusInto: Register (`0`–`15`) to receive the HTTP status code.
-    ///   - valueInto: Register (`0`–`15`) to receive the first integer in the body.
-    public mutating func httpGet(_ url: String, statusInto: UInt8, valueInto: UInt8) {
-        bytes += httpOpBytes(method: 0, statusReg: statusInto, valueReg: valueInto, url: url, body: nil)
+    public mutating func httpGet(_ url: String, statusInto: UInt8) {
+        bytes += httpOpBytes(method: 0, statusReg: statusInto, url: url, body: nil)
     }
 
-    /// Record an **internet `POST`** the device makes over Wi-Fi while the task
-    /// runs (non-standard extension). The `body` is sent with
-    /// `Content-Type: application/json`. Results land in registers exactly as for
-    /// ``httpGet(_:statusInto:valueInto:)``.
+    /// Record an **internet `POST`** (Wi-Fi, `Content-Type: application/json`).
+    /// Status lands in `R[statusInto]`; inspect the body with the JSON/string ops.
+    public mutating func httpPost(_ url: String, body: String, statusInto: UInt8) {
+        bytes += httpOpBytes(method: 1, statusReg: statusInto, url: url, body: body)
+    }
+
+    // MARK: Response inspection (operate on the last httpGet/httpPost body)
+
+    /// Record reading a **number from the last response's JSON** at `path` into a
+    /// register, scaled by `10^scaledBy` and truncated (so fractions survive in the
+    /// Int32 register — `changePercent -0.42` with `scaledBy: 2` → `-42`). Returns
+    /// the value register as a ``SchedulerOperand`` for `ifTrue`.
+    ///
+    /// `path` is dotted with array indices, e.g. `quoteResponse.result[0].regularMarketChangePercent`.
     /// - Parameters:
-    ///   - url: The `http://`/`https://` URL to post to (ASCII; TLS not verified).
-    ///   - body: The request body (e.g. a JSON string). ASCII.
-    ///   - statusInto: Register (`0`–`15`) to receive the HTTP status code.
-    ///   - valueInto: Register (`0`–`15`) to receive the first integer in the response.
-    public mutating func httpPost(_ url: String, body: String, statusInto: UInt8, valueInto: UInt8) {
-        bytes += httpOpBytes(method: 1, statusReg: statusInto, valueReg: valueInto, url: url, body: body)
+    ///   - path: JSON path (ASCII).
+    ///   - scaledBy: Decimal places to keep (`0` = integer part only).
+    ///   - into: Value register; auto-allocated (R15↓) if omitted.
+    ///   - found: Register set to `1` if the path resolved to a number, else `0`; auto-allocated if omitted.
+    /// - Returns: The value register operand.
+    @discardableResult
+    public mutating func jsonNumber(_ path: String, scaledBy: UInt8 = 0,
+                                    into: UInt8? = nil, found: UInt8? = nil) -> SchedulerOperand {
+        let dst = into ?? allocateRegister()
+        let fnd = found ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonNum,
+                          dst & 0x0F, fnd & 0x0F, scaledBy]
+        appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); bytes += m
+        return .reg(dst & 0x0F)
+    }
+
+    /// Record testing whether the whole last response body **contains** `text`
+    /// (raw substring). Returns the `0/1` result register.
+    @discardableResult
+    public mutating func bodyContains(_ text: String, into: UInt8? = nil) -> SchedulerOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst & 0x0F]
+        appendLengthPrefixed(&m, text)
+        m.append(Cmd.endSysEx); bytes += m
+        return .reg(dst & 0x0F)
+    }
+
+    /// Record testing whether the **JSON string** at `path` equals `value`.
+    /// Returns the `0/1` result register.
+    @discardableResult
+    public mutating func jsonStringEquals(_ path: String, _ value: String, into: UInt8? = nil) -> SchedulerOperand {
+        return jsonStrOp(Sched.extJsonStrEq, path, value, into)
+    }
+
+    /// Record testing whether the **JSON string** at `path` contains `substring`.
+    /// Returns the `0/1` result register.
+    @discardableResult
+    public mutating func jsonStringContains(_ path: String, _ substring: String, into: UInt8? = nil) -> SchedulerOperand {
+        return jsonStrOp(Sched.extJsonStrContains, path, substring, into)
+    }
+
+    private mutating func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: UInt8?) -> SchedulerOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst & 0x0F]
+        appendLengthPrefixed(&m, path)
+        appendLengthPrefixed(&m, s)
+        m.append(Cmd.endSysEx); bytes += m
+        return .reg(dst & 0x0F)
+    }
+
+    private func appendLengthPrefixed(_ m: inout [UInt8], _ s: String) {
+        let b = Array(s.utf8)
+        m += [UInt8(b.count & 0x7F), UInt8((b.count >> 7) & 0x7F)]
+        m += b.map { $0 & 0x7F }      // ASCII expected
     }
 
     // MARK: Extension byte builders
@@ -330,14 +385,14 @@ public enum SchedulerComparison: UInt8, Sendable {
 // MARK: - Internet-action op encoding (non-standard extension)
 
 /// Encode a `SCHED_EXT_HTTP` op (used both inside tasks and for live requests).
-/// Layout: `F0 7B 7F 15 method statusReg valueReg urlLo urlHi url[…] bodyLo bodyHi body[…] F7`.
-/// URL/body are sent as raw 7-bit ASCII; lengths are 14-bit little-endian.
-func httpOpBytes(method: UInt8, statusReg: UInt8, valueReg: UInt8,
-                 url: String, body: String?) -> [UInt8] {
+/// Layout: `F0 7B 7F 15 method statusReg urlLo urlHi url[…] bodyLo bodyHi body[…] F7`.
+/// URL/body are sent as raw 7-bit ASCII; lengths are 14-bit little-endian. The
+/// response body is retained on the device for the inspection ops.
+func httpOpBytes(method: UInt8, statusReg: UInt8, url: String, body: String?) -> [UInt8] {
     let u = Array(url.utf8)
     let b = Array((body ?? "").utf8)
     var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extHttp,
-                      method, statusReg & 0x0F, valueReg & 0x0F]
+                      method, statusReg & 0x0F]
     m += [UInt8(u.count & 0x7F), UInt8((u.count >> 7) & 0x7F)]
     m += u.map { $0 & 0x7F }
     m += [UInt8(b.count & 0x7F), UInt8((b.count >> 7) & 0x7F)]

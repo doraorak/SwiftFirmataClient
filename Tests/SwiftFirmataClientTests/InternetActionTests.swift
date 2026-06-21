@@ -1,22 +1,22 @@
 import Testing
 @testable import SwiftFirmataClient
 
-// Internet actions + register-returning recorder reads (non-standard extension).
-// HTTP ops ride the scheduler's reserved extension command: F0 7B 7F 15 … F7.
+// Internet actions + response-inspection ops (non-standard extension).
+// HTTP ops ride the scheduler's reserved extension command: F0 7B 7F <op> … F7.
 // "http://x" = [104,116,116,112,58,47,47,120] (8 bytes).
 @Suite("InternetActions")
 struct InternetActionTests {
 
     private let urlBytes: [UInt8] = [104, 116, 116, 112, 58, 47, 47, 120]  // "http://x"
 
-    // MARK: - Recorder encoding
+    // MARK: - Recorder HTTP encoding (status-only; no value register)
 
     @Test func httpGetEncoding() {
         var r = FirmataTaskRecorder()
-        r.httpGet("http://x", statusInto: 0, valueInto: 1)
+        r.httpGet("http://x", statusInto: 0)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x15,
-            0x00, 0x00, 0x01,          // method=GET, statusReg=0, valueReg=1
+            0x00, 0x00,                // method=GET, statusReg=0
             0x08, 0x00,                // urlLen = 8
         ] + urlBytes + [
             0x00, 0x00,                // bodyLen = 0
@@ -26,10 +26,10 @@ struct InternetActionTests {
 
     @Test func httpPostEncoding() {
         var r = FirmataTaskRecorder()
-        r.httpPost("http://x", body: "hi", statusInto: 2, valueInto: 3)
+        r.httpPost("http://x", body: "hi", statusInto: 2)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x15,
-            0x01, 0x02, 0x03,          // method=POST, statusReg=2, valueReg=3
+            0x01, 0x02,                // method=POST, statusReg=2
             0x08, 0x00,                // urlLen = 8
         ] + urlBytes + [
             0x02, 0x00,                // bodyLen = 2
@@ -38,32 +38,76 @@ struct InternetActionTests {
         ])
     }
 
-    // MARK: - Recorder register-returning reads (auto-allocate R15 → R0)
+    // MARK: - Response-inspection op encoding
 
-    @Test func recorderReadsReturnDescendingRegisters() {
+    @Test func jsonNumberAutoRegisters() {
         var r = FirmataTaskRecorder()
-        let a = r.digitalRead(pin: 7)
-        let b = r.analogRead(channel: 0)
-        guard case .reg(let ra) = a, case .reg(let rb) = b else {
-            Issue.record("Expected register operands"); return
-        }
-        #expect(ra == 15)   // first auto register
-        #expect(rb == 14)   // next, descending
+        let v = r.jsonNumber("id", scaledBy: 2)   // dst auto=15, found auto=14
+        guard case .reg(let rv) = v else { Issue.record("expected reg"); return }
+        #expect(rv == 15)
         #expect(r.bytes == [
-            0xF0, 0x7B, 0x7F, 0x11, 15, 7, 0xF7,    // R15 = digitalRead(7)
-            0xF0, 0x7B, 0x7F, 0x12, 14, 0, 0xF7,    // R14 = analogRead(A0)
+            0xF0, 0x7B, 0x7F, 0x16,
+            15, 14, 2,                 // dst=15, found=14, scale=2
+            0x02, 0x00, 105, 100,      // path "id"
+            0xF7,
         ])
     }
 
-    @Test func recorderReadOperandFlowsIntoIfTrue() {
+    @Test func jsonNumberExplicitRegisters() {
         var r = FirmataTaskRecorder()
-        let dark = r.analogRead(channel: 0)                    // -> R15
-        r.ifTrue(dark, .lessThan, .const(300)) { $0.digitalWrite(pin: 2, high: true) }
-        // First the read op, then an EXT IF whose operand A is reg 15.
-        #expect(Array(r.bytes.prefix(7)) == [0xF0, 0x7B, 0x7F, 0x12, 15, 0, 0xF7])
-        let ifStart = 7
-        #expect(r.bytes[ifStart + 3] == 0x13)                  // EXT IF
-        #expect(r.bytes[ifStart + 5] == 0x00 && r.bytes[ifStart + 6] == 15)  // operand a = reg 15
+        let v = r.jsonNumber("a", into: 3, found: 4)   // scale defaults to 0
+        guard case .reg(let rv) = v else { Issue.record("expected reg"); return }
+        #expect(rv == 3)
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x16, 3, 4, 0, 0x01, 0x00, 97, 0xF7,
+        ])
+    }
+
+    @Test func bodyContainsEncoding() {
+        var r = FirmataTaskRecorder()
+        let b = r.bodyContains("OK")   // auto dst=15
+        guard case .reg(let rb) = b else { Issue.record("expected reg"); return }
+        #expect(rb == 15)
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x18, 15, 0x02, 0x00, 79, 75, 0xF7,
+        ])
+    }
+
+    @Test func jsonStringEqualsEncoding() {
+        var r = FirmataTaskRecorder()
+        _ = r.jsonStringEquals("s", "hi", into: 5)
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x17, 5,
+            0x01, 0x00, 115,           // path "s"
+            0x02, 0x00, 104, 105,      // value "hi"
+            0xF7,
+        ])
+    }
+
+    @Test func jsonStringContainsEncoding() {
+        var r = FirmataTaskRecorder()
+        _ = r.jsonStringContains("s", "h", into: 6)
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x19, 6,
+            0x01, 0x00, 115,           // path "s"
+            0x01, 0x00, 104,           // substring "h"
+            0xF7,
+        ])
+    }
+
+    // MARK: - Inspection operands flow into ifTrue / auto-register descent
+
+    @Test func jsonNumberFlowsIntoIfTrue() {
+        var r = FirmataTaskRecorder()
+        r.httpGet("http://x", statusInto: 0)
+        let pct = r.jsonNumber("changePercent", scaledBy: 2)   // dst=15, found=14
+        guard case .reg(let rv) = pct else { Issue.record("expected reg"); return }
+        #expect(rv == 15)
+        r.ifTrue(pct, .greaterThan, .const(0)) { $0.digitalWrite(pin: 2, high: true) }
+        // The next auto-allocated read should be R13 (15 and 14 already taken).
+        let nxt = r.bodyContains("x")
+        guard case .reg(let rn) = nxt else { Issue.record("expected reg"); return }
+        #expect(rn == 13)
     }
 
     // MARK: - Parser: HTTP_REPLY -> .httpResponse
@@ -81,7 +125,25 @@ struct InternetActionTests {
         #expect(body == "OK")
     }
 
-    // MARK: - Live API
+    // MARK: - Host-side Foundation inspection of HTTPResponse
+
+    @Test func httpResponseDecodesJSON() throws {
+        let resp = HTTPResponse(status: 200, body: #"{"price": 12.5, "sym": "SPY"}"#)
+        struct Quote: Decodable { let price: Double; let sym: String }
+        let q = try resp.decode(Quote.self)
+        #expect(q.price == 12.5)
+        #expect(q.sym == "SPY")
+        let obj = try resp.json() as? [String: Any]
+        #expect(obj?["sym"] as? String == "SPY")
+        #expect(resp.isSuccess)
+    }
+
+    @Test func httpResponseNonSuccess() {
+        #expect(!HTTPResponse(status: 404, body: "").isSuccess)
+        #expect(!HTTPResponse(status: 0, body: "").isSuccess)
+    }
+
+    // MARK: - Live API (status -> R15; body inspected on the host)
 
     private func makeClient() async -> (FirmataClient, MockTransport) {
         let transport = MockTransport()
@@ -99,9 +161,9 @@ struct InternetActionTests {
         let r = try await resp
         #expect(r.status == 200)
         #expect(r.body == "hello")
-        // Live requests default to status->R15, value->R14.
+        // Live requests put status in R15 (no value register any more).
         #expect(transport.lastSent == [
-            0xF0, 0x7B, 0x7F, 0x15, 0x00, 15, 14, 0x08, 0x00,
+            0xF0, 0x7B, 0x7F, 0x15, 0x00, 15, 0x08, 0x00,
         ] + urlBytes + [0x00, 0x00, 0xF7])
     }
 
@@ -113,7 +175,7 @@ struct InternetActionTests {
         let r = try await resp
         #expect(r.status == 201)
         #expect(transport.lastSent == [
-            0xF0, 0x7B, 0x7F, 0x15, 0x01, 15, 14, 0x08, 0x00,
+            0xF0, 0x7B, 0x7F, 0x15, 0x01, 15, 0x08, 0x00,
         ] + urlBytes + [0x02, 0x00, 104, 105, 0xF7])
     }
 }
