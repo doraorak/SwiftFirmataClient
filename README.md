@@ -372,16 +372,12 @@ public protocol FirmataTransport: Sendable {
 internet actions, and the JSON/string response-inspection ops — same wire format):
 
 - [**ESP32FirmataSwift**](https://github.com/doraorak/ESP32FirmataSwift) — an
-  Embedded-Swift firmware for the original ESP32. **`https://` (cert-validated) works
-  alongside Wi-Fi + BLE.**
+  Embedded-Swift firmware for the original ESP32.
 - [**ESP32Firmata**](https://github.com/doraorak/ESP32Firmata) — the Arduino/C++
-  sketch (Wi-Fi/TCP + Bonjour **and** BLE in one build).
+  sketch (Wi-Fi/TCP + Bonjour **and** BLE in one build; uses NimBLE).
 
-> **HTTPS heap note (C++ firmware only).** On the Arduino/C++ **ESP32Firmata**, the
-> dual Wi-Fi + BLE build leaves too little heap for the Arduino core's TLS buffers,
-> so `https://` works only in its **Wi-Fi-only build** (`http://` and all the JSON/
-> string ops work in every build). For `https://` **with** BLE, use the
-> **ESP32FirmataSwift** firmware. See its README for details.
+Both do **`https://` (cert-validated) alongside Wi-Fi + BLE**, plus the JSON/string
+inspection ops, with the same wire format.
 
 For the built-in transports the device should:
 
