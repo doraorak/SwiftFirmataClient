@@ -49,7 +49,7 @@ Every message the device sends is published on ``FirmataClient/messages``:
 
 ```swift
 try await client.setPinMode(34, mode: .analog)
-try await client.reportAnalogPin(0, enable: true)
+try await client.reportAnalogChannel(0, enable: true)
 
 Task {
     for await message in client.messages {
@@ -106,22 +106,22 @@ try await client.deleteTask(id: 2)
 A task can also make its own decisions, so it doesn't just replay a fixed
 sequence. The device has **16 global Int32 registers**; you load values into them
 (a constant via ``FirmataTaskRecorder/setRegister(_:to:)``, or a reading via
-``FirmataTaskRecorder/readDigital(into:pin:)`` /
-``FirmataTaskRecorder/readAnalog(into:channel:)``) and branch on them with
+``FirmataTaskRecorder/digitalRead(into:pin:)`` /
+``FirmataTaskRecorder/analogRead(into:channel:)``) and branch on them with
 ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``:
 
 ```swift
 // A night-light running entirely on the board, with nobody connected.
 try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
     t.setPinMode(2, mode: .output)
-    t.readAnalog(into: 0, channel: 0)                 // R0 = analog A0
-    t.ifTrue(.reg(0), .lessThan, .const(300),         // dark?
+    t.analogRead(into: 0, channel: 0)                 // R0 = analog A0
+    t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
 ```
 
-Operands are `.reg(0...15)` or `.const(value)`; comparisons are `==`, `!=`, `<`,
+Operands are `.reg(0...15)` or `.number(value)`; comparisons are `==`, `!=`, `<`,
 `>`, `<=`, `>=`. Branches are forward-only (no jumps/loops), so a task can decide
 but can never hang the board; looping stays via `repeatEveryMs`.
 
@@ -192,5 +192,5 @@ Task {
 
 ### On-device logic (non-standard extension)
 
-- ``SchedulerOperand``
-- ``SchedulerComparison``
+- ``TaskOperand``
+- ``TaskComparison``

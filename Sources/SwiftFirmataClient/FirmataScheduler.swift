@@ -27,24 +27,24 @@ public struct SchedulerTask: Sendable {
 /// hands you a recorder inside its trailing closure:
 ///
 /// ```swift
-/// try await client.uploadTask(id: 1) { t in
+/// try await client.uploadTask(id: 1) { board in
 /// //                                  ^ this is the recorder
-///     t.setPinMode(2, mode: .output)
-///     t.digitalWrite(pin: 2, high: true)
+///     board.setPinMode(2, mode: .output)
+///     board.digitalWrite(pin: 2, high: true)
 /// }
 /// ```
 ///
-/// **What is `t in`?** It's just Swift closure syntax: `{ t in … }` declares a
+/// **What is `board in`?** It's just Swift closure syntax: `{ board in … }` declares a
 /// closure whose one parameter is named `t`. Here that parameter *is* the
-/// `FirmataTaskRecorder`, so inside the braces you call `t.setPinMode(…)`,
-/// `t.digitalWrite(…)`, `t.delay(…)`, etc. to record each step. The name `t` is
+/// `FirmataTaskRecorder`, so inside the braces you call `board.setPinMode(…)`,
+/// `board.digitalWrite(…)`, `board.delay(…)`, etc. to record each step. The name `board` is
 /// arbitrary — `{ recorder in … }` or the shorthand `{ $0.digitalWrite(…) }` mean
 /// the same thing. (`inout` lets your calls mutate the recorder in place.)
 ///
 /// The methods mirror the live ``FirmataClient`` calls but **capture the bytes
 /// instead of sending them** — so they're synchronous (no `await`). Insert
 /// ``delay(ms:)`` between actions to make the device wait while the task runs.
-public struct FirmataTaskRecorder: Sendable {
+public final class FirmataTaskRecorder {
     /// The recorded bytes so far (the task program). Usually you don't touch this
     /// directly — `uploadTask` reads it for you.
     public private(set) var bytes: [UInt8] = []
@@ -52,6 +52,14 @@ public struct FirmataTaskRecorder: Sendable {
     /// Next register handed out by ``digitalRead(pin:)`` / ``analogRead(channel:)``
     /// (descends `R15 → R0`, then wraps).
     private var nextAutoRegister: UInt8 = 15
+    /// Next float register auto-allocated for `jsonFloat` / float arithmetic
+    /// (descends `F7 → F0`, then wraps).
+    private var nextAutoFloatRegister: UInt8 = 7
+    /// Next snapshot slot auto-allocated by ``snapshot(_:into:)`` (0–1, then wraps).
+    private var nextSnapshotSlot: UInt8 = 0
+    /// Generation registers (for handle staleness) allocate bottom-up (R0↑) so they
+    /// don't collide with the top-down (R15↓) pool used by reads/arithmetic results.
+    private var nextRequestCountRegister: UInt8 = 0
 
     public init() {}
 
@@ -59,7 +67,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - pin: The board pin number.
     ///   - mode: The role the pin should take — see ``PinMode``.
-    public mutating func setPinMode(_ pin: UInt8, mode: PinMode) {
+    public func setPinMode(_ pin: UInt8, mode: PinMode) {
         bytes += [Cmd.setPinMode, pin, mode.rawValue]
     }
 
@@ -67,7 +75,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - pin: The board pin number to drive.
     ///   - high: `true` for HIGH, `false` for LOW.
-    public mutating func digitalWrite(pin: UInt8, high: Bool) {
+    public func digitalWrite(pin: UInt8, high: Bool) {
         bytes += [Cmd.setDigitalPinValue, pin, high ? 0x01 : 0x00]
     }
 
@@ -75,7 +83,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - port: The 8-pin group (`0` = pins 0-7, …).
     ///   - pinMask: One bit per pin (`1` = HIGH, `0` = LOW).
-    public mutating func writeDigitalPort(_ port: UInt8, pinMask: UInt8) {
+    public func writeDigitalPort(_ port: UInt8, pinMask: UInt8) {
         bytes += [Cmd.digitalMessage | (port & 0x0F), pinMask & 0x7F, (pinMask >> 7) & 0x01]
     }
 
@@ -83,7 +91,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - channel: The PWM channel (pin number for 0-15).
     ///   - value: Duty cycle within the pin's PWM resolution (e.g. `0`-`255`).
-    public mutating func analogWrite(channel: UInt8, value: UInt16) {
+    public func analogWrite(channel: UInt8, value: UInt16) {
         bytes += [Cmd.analogMessage | (channel & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
     }
 
@@ -92,10 +100,38 @@ public struct FirmataTaskRecorder: Sendable {
     /// (which is what ``FirmataClient/uploadTask(id:startDelayMs:repeatEveryMs:_:)``'s
     /// `repeatEveryMs` adds for you).
     /// - Parameter ms: How long to wait, in milliseconds.
-    public mutating func delay(ms: UInt32) {
+    public func delay(ms: UInt32) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.delay]
         bytes += encode7BitFirmata(timeBytes(ms))
         bytes.append(Cmd.endSysEx)
+    }
+
+    // MARK: I2C (standard Firmata — drive an I2C device from a task)
+    //
+    // The scheduler replays these through the device's Firmata parser, so a task
+    // can talk to an I2C peripheral (e.g. write command/data bytes to an SSD1306
+    // OLED) with no host connected. Call `i2cConfig` once (it begins the bus),
+    // then `i2cWrite` as needed. (Reads aren't offered here — their reply has no
+    // host to receive it inside an autonomous task.)
+
+    /// Record an I2C bus config/begin (`delayMicroseconds` between register-write
+    /// and read). Do this once at the start of a task that uses I2C.
+    public func i2cConfig(delayMicroseconds: UInt16 = 0) {
+        bytes += [Cmd.startSysEx, SysEx.i2cConfig,
+                  UInt8(delayMicroseconds & 0x7F), UInt8((delayMicroseconds >> 7) & 0x7F),
+                  Cmd.endSysEx]
+    }
+
+    /// Record an I2C write of `data` to `address` (each byte sent as a 7-bit
+    /// LSB/MSB pair, per Firmata I2C framing).
+    public func i2cWrite(address: UInt16, data: [UInt8], is10Bit: Bool = false) {
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.i2cRequest, UInt8(address & 0x7F)]
+        var control: UInt8 = (I2CMode.write.rawValue & 0x03) << 3   // write mode, no auto-restart
+        if is10Bit { control |= 0x20; control |= UInt8((address >> 7) & 0x07) }
+        m.append(control)
+        for b in data { m.append(b & 0x7F); m.append((b >> 7) & 0x01) }
+        m.append(Cmd.endSysEx)
+        bytes += m
     }
 
     // MARK: NON-STANDARD logic extension (see NONSTANDARD.md)
@@ -114,7 +150,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - register: Destination register index, `0`–`15`.
     ///   - value: The signed 32-bit value to store.
-    public mutating func setRegister(_ register: UInt8, to value: Int32) {
+    public func setRegister(_ register: UInt8, to value: Int32) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSet, register & 0x0F]
         bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value)))
         bytes.append(Cmd.endSysEx)
@@ -125,8 +161,8 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - register: Destination register, `0`–`15`.
     ///   - pin: The board pin to read.
-    public mutating func readDigital(into register: UInt8, pin: UInt8) {
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extReadDigital,
+    public func digitalRead(into register: UInt8, pin: UInt8) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extDigitalRead,
                   register & 0x0F, pin & 0x7F, Cmd.endSysEx]
     }
 
@@ -139,46 +175,64 @@ public struct FirmataTaskRecorder: Sendable {
     /// - Parameters:
     ///   - register: Destination register index, `0`–`15`.
     ///   - channel: Analog channel (`A0 = 0`, …).
-    public mutating func readAnalog(into register: UInt8, channel: UInt8) {
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extReadAnalog,
+    public func analogRead(into register: UInt8, channel: UInt8) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extAnalogRead,
                   register & 0x0F, channel & 0x0F, Cmd.endSysEx]
     }
 
     /// Record `digitalRead(pin)` into an **auto-allocated** register and return that
-    /// register as a ``SchedulerOperand`` — so you can drop the read straight into a
+    /// register as a ``TaskOperand`` — so you can drop the read straight into a
     /// comparison. (A recorder can't return a live value; the read happens on the
     /// device when the task runs, and this hands you the register it lands in.)
     ///
     /// ```swift
     /// let pressed = t.digitalRead(pin: 7)              // -> .reg(n)
-    /// t.ifTrue(pressed, .equal, .const(0),             // active-low button
+    /// t.ifTrue(pressed, .equal, .number(0),             // active-low button
     ///     then: { $0.digitalWrite(pin: 2, high: true) })
     /// ```
     ///
     /// Auto-allocated registers cycle `R15 → R0`; for explicit control use
-    /// ``readDigital(into:pin:)``. Read into a local first if you'll reuse it, since
+    /// ``digitalRead(into:pin:)``. Read into a local first if you'll reuse it, since
     /// a later auto-read may reuse the same register.
     /// - Parameter pin: The board pin to read (put it in `.input`/`.inputPullup` first).
     /// - Returns: The register operand holding `0`/`1`.
-    public mutating func digitalRead(pin: UInt8) -> SchedulerOperand {
-        let r = allocateRegister(); readDigital(into: r, pin: pin); return .reg(r)
+    public func digitalRead(pin: UInt8) -> BoolOperand {
+        let r = allocateRegister(); digitalRead(into: r, pin: pin); return .boolReg(r)
     }
 
     /// Record `analogRead(channel)` into an **auto-allocated** register and return
-    /// that register as a ``SchedulerOperand`` for use in
+    /// that register as a ``TaskOperand`` for use in
     /// ``ifTrue(_:_:_:then:elseDo:)``. See ``digitalRead(pin:)`` for the allocation
-    /// rules; use ``readAnalog(into:channel:)`` to choose the register yourself.
+    /// rules; use ``analogRead(into:channel:)`` to choose the register yourself.
     /// - Parameter channel: Analog channel index (`A0 = 0`, …), **not** a pin number.
     /// - Returns: The register operand holding the reading.
-    public mutating func analogRead(channel: UInt8) -> SchedulerOperand {
-        let r = allocateRegister(); readAnalog(into: r, channel: channel); return .reg(r)
+    public func analogRead(channel: UInt8) -> NumberOperand {
+        let r = allocateRegister(); analogRead(into: r, channel: channel); return .reg(r)
     }
 
     /// Hand out the next auto-allocated register, descending `R15 → R0` then wrapping
     /// (kept high to avoid clashing with low registers you set explicitly).
-    private mutating func allocateRegister() -> UInt8 {
+    private func allocateRegister() -> UInt8 {
         let r = nextAutoRegister
         nextAutoRegister = (nextAutoRegister == 0) ? 15 : (nextAutoRegister - 1)
+        return r
+    }
+
+    private func allocateFloatRegister() -> UInt8 {
+        let r = nextAutoFloatRegister
+        nextAutoFloatRegister = (nextAutoFloatRegister == 0) ? 7 : (nextAutoFloatRegister - 1)
+        return r
+    }
+
+    private func allocateSnapshotSlot() -> UInt8 {
+        let s = nextSnapshotSlot
+        nextSnapshotSlot = (nextSnapshotSlot == 1) ? 0 : (nextSnapshotSlot + 1)
+        return s
+    }
+
+    private func allocateGenRegister() -> UInt8 {
+        let r = nextRequestCountRegister
+        nextRequestCountRegister = (nextRequestCountRegister == 15) ? 0 : (nextRequestCountRegister + 1)
         return r
     }
 
@@ -187,8 +241,8 @@ public struct FirmataTaskRecorder: Sendable {
     /// only when the comparison is true, otherwise the `elseDo` block (if given) runs.
     ///
     /// ```swift
-    /// t.readAnalog(into: 0, channel: 0)                    // R0 = analog A0
-    /// t.ifTrue(.reg(0), .greaterThan, .const(512),         // if R0 > 512
+    /// t.analogRead(into: 0, channel: 0)                    // R0 = analog A0
+    /// t.ifTrue(.reg(0), .greaterThan, .number(512),         // if R0 > 512
     ///     then:   { b in b.digitalWrite(pin: 2, high: true) },   // …LED on
     ///     elseDo: { b in b.digitalWrite(pin: 2, high: false) })  // …else off
     /// ```
@@ -199,7 +253,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// including ``delay(ms:)`` and further `ifTrue` calls (nesting works).
     ///
     /// - Parameters:
-    ///   - a: Left operand — a register `.reg(0...15)` or a literal `.const(value)`.
+    ///   - a: Left operand — a register `.reg(0...15)` or a literal `.number(value)`.
     ///   - op: How to compare them — `.equal`, `.notEqual`, `.lessThan`,
     ///     `.greaterThan`, `.lessOrEqual`, or `.greaterOrEqual`.
     ///   - b: Right operand — a register or a literal.
@@ -207,10 +261,10 @@ public struct FirmataTaskRecorder: Sendable {
     ///     is the branch's recorder.
     ///   - elseDo: Optional — records the steps that run when the comparison is
     ///     **false**. Omit it for a plain `if` with no `else`.
-    public mutating func ifTrue(
-        _ a: SchedulerOperand,
-        _ op: SchedulerComparison,
-        _ b: SchedulerOperand,
+    public func ifTrue(
+        _ a: TaskOperand,
+        _ op: TaskComparison,
+        _ b: TaskOperand,
         then: (inout FirmataTaskRecorder) -> Void,
         elseDo: ((inout FirmataTaskRecorder) -> Void)? = nil
     ) {
@@ -232,6 +286,51 @@ public struct FirmataTaskRecorder: Sendable {
         bytes += elseBytes
     }
 
+    /// Record an `if` driven by a **boolean operand** — the `then` block runs when
+    /// `condition` is true (non-zero), otherwise `elseDo` (if given). Pass a value from
+    /// any predicate op: ``digitalRead(pin:)``, `json.stringEquals`, `bodyContains`,
+    /// ``compare(_:_:_:into:)``, etc.
+    ///
+    /// ```swift
+    /// let pressed = t.digitalRead(pin: 7)        // -> BoolOperand
+    /// t.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }
+    /// ```
+    ///
+    /// This is shorthand for ``ifTrue(_:_:_:then:elseDo:)`` with `.notEqual, .number(0)`.
+    /// - Parameters:
+    ///   - condition: A boolean operand (a `0`/non-zero register or literal).
+    ///   - then: Steps to run when `condition` is true.
+    ///   - elseDo: Optional steps to run when `condition` is false.
+    public func ifTrue(
+        _ condition: BoolOperand,
+        then: (inout FirmataTaskRecorder) -> Void,
+        elseDo: ((inout FirmataTaskRecorder) -> Void)? = nil
+    ) {
+        ifTrue(condition, .notEqual, .number(0), then: then, elseDo: elseDo)
+    }
+
+    /// Record `R[dst] = (a op b) ? 1 : 0` and return it as a **reusable boolean** — store
+    /// it once and branch on it (possibly several times) with ``ifTrue(_:then:elseDo:)``,
+    /// instead of repeating the comparison inline. Operands may be registers or literals;
+    /// if either side is a float the device promotes to float. Result register
+    /// auto-allocated (R15↓) unless `into:` is given. (Non-standard extension.)
+    ///
+    /// ```swift
+    /// let isUp = board.compare(pct, .greaterThan, .number(0))   // -> BoolOperand
+    /// board.ifTrue(isUp) { $0.digitalWrite(pin: 2, high: true) }
+    /// ```
+    @discardableResult
+    public func compare(_ a: TaskOperand, _ op: TaskComparison, _ b: TaskOperand,
+                        into: UInt8? = nil) -> BoolOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extCmp,
+                          op.rawValue, dst & 0x0F]
+        m += a.operandBytes
+        m += b.operandBytes
+        m.append(Cmd.endSysEx); bytes += m
+        return .boolReg(dst & 0x0F)
+    }
+
     /// Record an **internet request** the device makes over its own Wi-Fi while
     /// the task runs (non-standard extension; supports `https://` with cert
     /// validation). The device performs the HTTP(S) `GET`, stores the status in
@@ -239,19 +338,21 @@ public struct FirmataTaskRecorder: Sendable {
     /// response body** for the inspection ops below. If a host is connected, the
     /// status + body also arrive as ``FirmataMessage/httpResponse(status:body:)``.
     ///
-    /// Inspect the response with ``jsonNumber(_:scaledBy:into:found:)``,
-    /// ``jsonStringEquals(_:_:into:)``, ``jsonStringContains(_:_:into:)``, or
-    /// ``bodyContains(_:into:)`` — then branch with `ifTrue`:
+    /// Inspect the response by passing its ``TaskHTTPResponse/body`` to the ``json`` ops
+    /// (`board.json.number(resp.body, …)`, `.float`, `.stringEquals`, …) — then branch
+    /// with `ifTrue`:
     ///
     /// ```swift
     /// // Green/red LED from SPY's % change, no host connected.
-    /// try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
-    ///     t.setPinMode(2, mode: .output); t.setPinMode(4, mode: .output)
-    ///     t.httpGet("https://example.com/quote/SPY", statusInto: 0)
-    ///     let pct = t.jsonNumber("changePercent", scaledBy: 2)   // -0.42% -> -42
-    ///     t.ifTrue(pct, .greaterThan, .const(0),
-    ///         then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
-    ///         elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+    /// try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
+    ///     board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
+    ///     let spy = board.httpGet("https://example.com/quote/SPY")             // -> TaskHTTPResponse
+    ///     let pct = board.json.number(spy.body, "changePercent", scaledBy: 2)  // -0.42% -> -42
+    ///     board.ifTrue(spy.status, .equal, .number(200)) {                 // only act on success
+    ///         $0.ifTrue(pct, .greaterThan, .number(0),
+    ///             then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
+    ///             elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+    ///     }
     /// }
     /// ```
     ///
@@ -259,15 +360,72 @@ public struct FirmataTaskRecorder: Sendable {
     ///   The request **blocks the device** (~8 s max); keep request tasks infrequent.
     /// - Parameters:
     ///   - url: The `http://` or `https://` URL to fetch.
-    ///   - statusInto: Register (`0`–`15`) to receive the HTTP status code.
-    public mutating func httpGet(_ url: String, statusInto: UInt8) {
-        bytes += httpOpBytes(method: 0, statusReg: statusInto, url: url, body: nil)
+    ///   - statusInto: Register for the HTTP status; auto-allocated (R15↓) if omitted.
+    /// - Returns: A ``TaskHTTPResponse`` — branch on `.status`, and pass `.body` to the
+    ///   ``json`` ops (`board.json.number(resp.body, …)`) to inspect the payload.
+    @discardableResult
+    public func httpGet(_ url: String, statusInto: UInt8? = nil) -> TaskHTTPResponse {
+        let statusReg = statusInto ?? allocateRegister()
+        bytes += httpOpBytes(method: 0, statusReg: statusReg, url: url, body: nil)
+        return makeResponse(statusReg: statusReg)
     }
 
     /// Record an **internet `POST`** (Wi-Fi, `Content-Type: application/json`).
-    /// Status lands in `R[statusInto]`; inspect the body with the JSON/string ops.
-    public mutating func httpPost(_ url: String, body: String, statusInto: UInt8) {
-        bytes += httpOpBytes(method: 1, statusReg: statusInto, url: url, body: body)
+    /// Returns a ``TaskHTTPResponse`` (status auto-allocated unless `statusInto:` is given);
+    /// inspect the body with the JSON/string ops.
+    @discardableResult
+    public func httpPost(_ url: String, body: String, statusInto: UInt8? = nil) -> TaskHTTPResponse {
+        let statusReg = statusInto ?? allocateRegister()
+        bytes += httpOpBytes(method: 1, statusReg: statusReg, url: url, body: body)
+        return makeResponse(statusReg: statusReg)
+    }
+
+    // Capture the body generation into a register so the body handle can be staleness-checked.
+    private func makeResponse(statusReg: UInt8) -> TaskHTTPResponse {
+        let gReg = allocateGenRegister()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, gReg & 0x0F, Cmd.endSysEx]
+        return TaskHTTPResponse(status: .reg(statusReg & 0x0F),
+                                body: JSONOperand(genReg: gReg & 0x0F, snapshotSlot: nil, rec: self))
+    }
+
+    // MARK: Body handles — snapshot / select / free
+
+    /// Persist the **whole current body** into a snapshot slot so it survives the next
+    /// request, **upgrading `body` in place** to an owned handle (its ``JSONOperand/snapshotSlot``
+    /// is set). Slot auto-allocated (0–1) unless given. Call right after the `httpGet` whose
+    /// body you want to keep; subsequent `board.json` ops on the same handle read the snapshot.
+    func snapshot(_ body: JSONOperand, into slot: UInt8? = nil) {
+        let s = slot ?? allocateSnapshotSlot()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
+                  s & 0x01, 0x00, 0x00, Cmd.endSysEx]      // pathLen 0 = whole body
+        body.snapshotSlot = s & 0x01
+    }
+
+    /// Choose which body the following inspection ops read: a snapshot (owned), or the
+    /// live body checked against this handle's generation (a borrowed handle used after a
+    /// newer request reads as **stale** — test it with ``JSONOperand/isValid()``).
+    func select(_ body: JSONOperand) {
+        if let slot = body.snapshotSlot {
+            bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
+                      (slot & 0x01) + 1, 0x00, Cmd.endSysEx]
+        } else {
+            bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
+                      0x00, (body.genReg ?? 0) & 0x0F, Cmd.endSysEx]
+        }
+    }
+
+    /// Free a snapshot slot held by an owned body handle.
+    func free(_ body: JSONOperand) {
+        guard let slot = body.snapshotSlot else { return }
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot & 0x01, Cmd.endSysEx]
+    }
+
+    /// Read the device's current request count (body generation) into a register.
+    /// Used by ``JSONOperand/isValid()`` to compare against a handle's captured generation.
+    func currentRequestCount(into: UInt8? = nil) -> NumberOperand {
+        let dst = into ?? allocateRegister()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst & 0x0F, Cmd.endSysEx]
+        return .reg(dst & 0x0F)
     }
 
     // MARK: Response inspection (operate on the last httpGet/httpPost body)
@@ -275,7 +433,7 @@ public struct FirmataTaskRecorder: Sendable {
     /// Record reading a **number from the last response's JSON** at `path` into a
     /// register, scaled by `10^scaledBy` and truncated (so fractions survive in the
     /// Int32 register — `changePercent -0.42` with `scaledBy: 2` → `-42`). Returns
-    /// the value register as a ``SchedulerOperand`` for `ifTrue`.
+    /// the value register as a ``TaskOperand`` for `ifTrue`.
     ///
     /// `path` is dotted with array indices, e.g. `quoteResponse.result[0].regularMarketChangePercent`.
     /// - Parameters:
@@ -285,8 +443,8 @@ public struct FirmataTaskRecorder: Sendable {
     ///   - found: Register set to `1` if the path resolved to a number, else `0`; auto-allocated if omitted.
     /// - Returns: The value register operand.
     @discardableResult
-    public mutating func jsonNumber(_ path: String, scaledBy: UInt8 = 0,
-                                    into: UInt8? = nil, found: UInt8? = nil) -> SchedulerOperand {
+    func jsonNumber(_ path: String, scaledBy: UInt8 = 0,
+                                    into: UInt8? = nil, found: UInt8? = nil) -> NumberOperand {
         let dst = into ?? allocateRegister()
         let fnd = found ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonNum,
@@ -299,35 +457,35 @@ public struct FirmataTaskRecorder: Sendable {
     /// Record testing whether the whole last response body **contains** `text`
     /// (raw substring). Returns the `0/1` result register.
     @discardableResult
-    public mutating func bodyContains(_ text: String, into: UInt8? = nil) -> SchedulerOperand {
+    func bodyContains(_ text: String, into: UInt8? = nil) -> BoolOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst & 0x0F]
         appendLengthPrefixed(&m, text)
         m.append(Cmd.endSysEx); bytes += m
-        return .reg(dst & 0x0F)
+        return .boolReg(dst & 0x0F)
     }
 
     /// Record testing whether the **JSON string** at `path` equals `value`.
     /// Returns the `0/1` result register.
     @discardableResult
-    public mutating func jsonStringEquals(_ path: String, _ value: String, into: UInt8? = nil) -> SchedulerOperand {
+    func jsonStringEquals(_ path: String, _ value: String, into: UInt8? = nil) -> BoolOperand {
         return jsonStrOp(Sched.extJsonStrEq, path, value, into)
     }
 
     /// Record testing whether the **JSON string** at `path` contains `substring`.
     /// Returns the `0/1` result register.
     @discardableResult
-    public mutating func jsonStringContains(_ path: String, _ substring: String, into: UInt8? = nil) -> SchedulerOperand {
+    func jsonStringContains(_ path: String, _ substring: String, into: UInt8? = nil) -> BoolOperand {
         return jsonStrOp(Sched.extJsonStrContains, path, substring, into)
     }
 
-    private mutating func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: UInt8?) -> SchedulerOperand {
+    private func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: UInt8?) -> BoolOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst & 0x0F]
         appendLengthPrefixed(&m, path)
         appendLengthPrefixed(&m, s)
         m.append(Cmd.endSysEx); bytes += m
-        return .reg(dst & 0x0F)
+        return .boolReg(dst & 0x0F)
     }
 
     private func appendLengthPrefixed(_ m: inout [UInt8], _ s: String) {
@@ -336,21 +494,153 @@ public struct FirmataTaskRecorder: Sendable {
         m += b.map { $0 & 0x7F }      // ASCII expected
     }
 
-    // MARK: Extension byte builders
+    // MARK: Arithmetic (on integer registers)
 
-    private static func operandBytes(_ o: SchedulerOperand) -> [UInt8] {
-        switch o {
-        case .reg(let r):   return [0, r & 0x0F]
-        case .const(let v): return [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: v)))
-        }
+    /// Record `R[dst] = a + b`. Operands are registers and/or literals; the result
+    /// register is auto-allocated (R15↓) unless `into:` is given. Returns it as an
+    /// operand for chaining / `ifTrue`. (64-bit intermediates on the device avoid
+    /// overflow; `÷` and `%` by zero yield 0.)
+    @discardableResult
+    public func add(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+        arith(0, a, b, into)
+    }
+    /// Record `R[dst] = a - b`. See ``add(_:_:into:)``.
+    @discardableResult
+    public func subtract(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+        arith(1, a, b, into)
+    }
+    /// Record `R[dst] = a * b`. See ``add(_:_:into:)``.
+    @discardableResult
+    public func multiply(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+        arith(2, a, b, into)
+    }
+    /// Record `R[dst] = a / b` (integer division; `÷0` → 0). See ``add(_:_:into:)``.
+    @discardableResult
+    public func divide(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+        arith(3, a, b, into)
+    }
+    /// Record `R[dst] = a % b` (`%0` → 0). See ``add(_:_:into:)``.
+    @discardableResult
+    public func modulo(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+        arith(4, a, b, into)
     }
 
-    private static func ifMessage(_ a: SchedulerOperand, _ op: SchedulerComparison,
-                                  _ b: SchedulerOperand, skipBytes: Int) -> [UInt8] {
+    private func arith(_ sub: UInt8, _ a: TaskOperand, _ b: TaskOperand,
+                                _ into: UInt8?) -> NumberOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extArith, sub, dst & 0x0F]
+        m += a.operandBytes
+        m += b.operandBytes
+        m.append(Cmd.endSysEx); bytes += m
+        return .reg(dst & 0x0F)
+    }
+
+    // MARK: Float registers (8 of them, F0–F7)
+
+    /// Record `F[dst] = value`. Returns the float register as a `.freg` operand.
+    @discardableResult
+    public func setFloatRegister(_ dst: UInt8, to value: Float) -> FloatOperand {
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSetFloat, dst & 0x07]
+        m += encode7BitFirmata(timeBytes(value.bitPattern))
+        m.append(Cmd.endSysEx); bytes += m
+        return .freg(dst & 0x07)
+    }
+
+    /// Record reading a **float** from the last response's JSON at `path` into a
+    /// float register (handles unquoted `593.2`, quoted `"593.2"`, and exponents).
+    /// Returns the float register operand; `found` (int reg) is `1`/`0`.
+    @discardableResult
+    func jsonFloat(_ path: String, into: UInt8? = nil, found: UInt8? = nil) -> FloatOperand {
+        let dst = into ?? allocateFloatRegister()
+        let fnd = found ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonFloat,
+                          dst & 0x07, fnd & 0x0F]
+        appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); bytes += m
+        return .freg(dst & 0x07)
+    }
+
+    /// Record `F[dst] = a + b` (float). Operands may be float/int registers or
+    /// literals (ints promote to float). Result float register auto-allocated
+    /// (F7↓) unless `into:` is given. `÷0` → 0.
+    @discardableResult
+    public func addFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+        arithF(0, a, b, into)
+    }
+    /// Record `F[dst] = a - b` (float). See ``addFloat(_:_:into:)``.
+    @discardableResult
+    public func subtractFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+        arithF(1, a, b, into)
+    }
+    /// Record `F[dst] = a * b` (float). See ``addFloat(_:_:into:)``.
+    @discardableResult
+    public func multiplyFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+        arithF(2, a, b, into)
+    }
+    /// Record `F[dst] = a / b` (float; `÷0` → 0). See ``addFloat(_:_:into:)``.
+    @discardableResult
+    public func divideFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+        arithF(3, a, b, into)
+    }
+
+    private func arithF(_ sub: UInt8, _ a: TaskOperand, _ b: TaskOperand,
+                                 _ into: UInt8?) -> FloatOperand {
+        let dst = into ?? allocateFloatRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extArithFloat, sub, dst & 0x07]
+        m += a.operandBytes
+        m += b.operandBytes
+        m.append(Cmd.endSysEx); bytes += m
+        return .freg(dst & 0x07)
+    }
+
+    // MARK: Query the last response (inspect before you extract / store)
+
+    /// Record `R[dst]` = the ``TaskJSONValueType`` of the value at `path` (its raw value).
+    /// Branch with `ifTrue(t, .equal, .number(TaskJSONValueType.number.rawValue))`.
+    @discardableResult
+    func jsonType(_ path: String, into: UInt8? = nil) -> NumberOperand {
+        queryOp(Sched.extJsonType, path, into)
+    }
+    /// Record `R[dst]` = byte length of the value's span at `path` (`0` if missing) —
+    /// size a snapshot before storing it.
+    @discardableResult
+    func jsonSize(_ path: String, into: UInt8? = nil) -> NumberOperand {
+        queryOp(Sched.extJsonSize, path, into)
+    }
+    /// Record `R[dst]` = content length of the JSON string at `path` (`0` if not a string).
+    @discardableResult
+    func stringLength(_ path: String, into: UInt8? = nil) -> NumberOperand {
+        queryOp(Sched.extStrLen, path, into)
+    }
+
+    private func queryOp(_ op: UInt8, _ path: String, _ into: UInt8?) -> NumberOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst & 0x0F]
+        appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); bytes += m
+        return .reg(dst & 0x0F)
+    }
+
+    /// Record reading heap stats into registers — `free` heap and `largest`
+    /// contiguous block — so a task can gate an allocation on available memory.
+    @discardableResult
+    public func heapStats(freeInto: UInt8? = nil,
+                                   largestInto: UInt8? = nil) -> (free: NumberOperand, largest: NumberOperand) {
+        let f = freeInto ?? allocateRegister()
+        let l = largestInto ?? allocateRegister()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extHeap,
+                  f & 0x0F, l & 0x0F, Cmd.endSysEx]
+        return (.reg(f & 0x0F), .reg(l & 0x0F))
+    }
+
+    // MARK: Extension byte builders
+
+    private static func ifMessage(_ a: TaskOperand, _ op: TaskComparison,
+                                  _ b: TaskOperand, skipBytes: Int) -> [UInt8] {
         let n = UInt16(min(skipBytes, 0x3FFF))
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extIf, op.rawValue]
-        m += operandBytes(a)
-        m += operandBytes(b)
+        m += a.operandBytes
+        m += b.operandBytes
         m += [UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
         return m
     }
@@ -360,20 +650,210 @@ public struct FirmataTaskRecorder: Sendable {
         return [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSkip,
                 UInt8(n & 0x7F), UInt8((n >> 7) & 0x7F), Cmd.endSysEx]
     }
+
+    /// JSON inspection of recorded response bodies — call as
+    /// `board.json.number(resp.body, "path")`. (A tiny value-type view over the recorder;
+    /// no instance to manage.)
+    public var json: JSONOps { JSONOps(rec: self) }
 }
 
-/// An operand for ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)`` — either one of
-/// the device's 16 registers or a literal value. (Non-standard extension.)
-public enum SchedulerOperand: Sendable {
-    /// One of the device's registers, by index (`0`–`15`).
-    case reg(UInt8)
-    /// A fixed signed 32-bit literal compared as-is.
-    case const(Int32)
+/// JSON inspection of a recorded response body (reached via ``FirmataTaskRecorder/json``).
+/// Each call takes a ``JSONOperand`` body handle (from ``TaskHTTPResponse/body`` or
+/// ``snapshot(_:into:)``): it selects that source on the device — a snapshot, or the live
+/// body checked for staleness against the handle's generation — then records the op. Branch
+/// on results with `board.ifTrue`, and guard a borrowed handle's freshness with
+/// ``JSONOperand/isValid()``.
+public struct JSONOps {
+    let rec: FirmataTaskRecorder
+
+    /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
+    @discardableResult
+    public func number(_ body: JSONOperand, _ path: String, scaledBy: UInt8 = 0,
+                       into: UInt8? = nil, found: UInt8? = nil) -> NumberOperand {
+        rec.select(body); return rec.jsonNumber(path, scaledBy: scaledBy, into: into, found: found)
+    }
+    /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
+    @discardableResult
+    public func float(_ body: JSONOperand, _ path: String,
+                      into: UInt8? = nil, found: UInt8? = nil) -> FloatOperand {
+        rec.select(body); return rec.jsonFloat(path, into: into, found: found)
+    }
+    /// `R` = (JSON string at `path` == `value`) ? 1 : 0.
+    @discardableResult
+    public func stringEquals(_ body: JSONOperand, _ path: String, _ value: String,
+                             into: UInt8? = nil) -> BoolOperand {
+        rec.select(body); return rec.jsonStringEquals(path, value, into: into)
+    }
+    /// `R` = (JSON string at `path` contains `substring`) ? 1 : 0.
+    @discardableResult
+    public func stringContains(_ body: JSONOperand, _ path: String, _ substring: String,
+                               into: UInt8? = nil) -> BoolOperand {
+        rec.select(body); return rec.jsonStringContains(path, substring, into: into)
+    }
+    /// `R` = (the whole body contains `text`) ? 1 : 0.
+    @discardableResult
+    public func bodyContains(_ body: JSONOperand, _ text: String, into: UInt8? = nil) -> BoolOperand {
+        rec.select(body); return rec.bodyContains(text, into: into)
+    }
+    /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
+    @discardableResult
+    public func type(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+        rec.select(body); return rec.jsonType(path, into: into)
+    }
+    /// `R` = byte length of the value span at `path` (size before snapshotting).
+    @discardableResult
+    public func size(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+        rec.select(body); return rec.jsonSize(path, into: into)
+    }
+    /// `R` = content length of the JSON string at `path`.
+    @discardableResult
+    public func stringLength(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+        rec.select(body); return rec.stringLength(path, into: into)
+    }
+    /// Persist the body into a slot that survives the next request, **upgrading `body` in
+    /// place** to an owned handle — call right after the `httpGet` you want to keep.
+    public func snapshot(_ body: JSONOperand, into slot: UInt8? = nil) { rec.snapshot(body, into: slot) }
+    /// Free a snapshot slot held by an owned body handle.
+    public func free(_ body: JSONOperand) { rec.free(body) }
+}
+
+/// A typed value the device evaluates in ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``
+/// and arithmetic — an integer/float register or a literal. (Non-standard extension.)
+/// When either side of a comparison/op is a float, the device promotes to float.
+///
+/// This is the abstract base; the recorder's ops hand back the concrete kind that
+/// matches what they produce — ``NumberOperand``, ``FloatOperand``, or ``BoolOperand`` —
+/// so the static type tells you what a value *is*. Build literals with
+/// ``number(_:)`` / ``float(_:)`` / ``bool(_:)`` (or `NumberOperand(200)` for a
+/// compile-time constant), and name registers explicitly with ``reg(_:)`` / ``freg(_:)``.
+public class TaskOperand: @unchecked Sendable {
+    /// Wire encoding: `00 reg` | `01 const:5` | `02 freg` | `03 fconst:5`.
+    let operandBytes: [UInt8]
+    required init(operandBytes: [UInt8]) { self.operandBytes = operandBytes }
+
+    /// The register index this operand names (int or float), or `nil` for a literal.
+    var register: UInt8? {
+        guard operandBytes.count == 2, operandBytes[0] == 0 || operandBytes[0] == 2 else { return nil }
+        return operandBytes[1]
+    }
+
+    // MARK: Literals
+    /// A fixed signed 32-bit integer literal.
+    public static func number(_ value: Int32) -> NumberOperand {
+        NumberOperand(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: value))))
+    }
+    /// A fixed `Float` literal.
+    public static func float(_ value: Float) -> FloatOperand {
+        FloatOperand(operandBytes: [3] + encode7BitFirmata(timeBytes(value.bitPattern)))
+    }
+    /// A fixed boolean literal (`1`/`0`, compared as an integer).
+    public static func bool(_ value: Bool) -> BoolOperand {
+        BoolOperand(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(value ? 1 : 0))))
+    }
+
+    // MARK: Registers (explicit / advanced)
+    /// One of the device's 16 integer registers, by index (`0`–`15`).
+    public static func reg(_ r: UInt8) -> NumberOperand { NumberOperand(operandBytes: [0, r & 0x0F]) }
+    /// One of the device's 8 float registers, by index (`0`–`7`).
+    public static func freg(_ r: UInt8) -> FloatOperand { FloatOperand(operandBytes: [2, r & 0x07]) }
+    /// An integer register reinterpreted as a boolean (`0`/non-zero) result.
+    static func boolReg(_ r: UInt8) -> BoolOperand { BoolOperand(operandBytes: [0, r & 0x0F]) }
+}
+
+/// An integer-valued operand — a register or a literal. Make a compile-time
+/// constant with `NumberOperand(200)` or ``TaskOperand/number(_:)``.
+public final class NumberOperand: TaskOperand, @unchecked Sendable {
+    /// A compile-time signed 32-bit constant.
+    public convenience init(_ value: Int32) {
+        self.init(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: value))))
+    }
+}
+
+/// A floating-point operand — a float register or a literal. Make a compile-time
+/// constant with `FloatOperand(1.5)` or ``TaskOperand/float(_:)``.
+public final class FloatOperand: TaskOperand, @unchecked Sendable {
+    /// A compile-time `Float` constant.
+    public convenience init(_ value: Float) {
+        self.init(operandBytes: [3] + encode7BitFirmata(timeBytes(value.bitPattern)))
+    }
+}
+
+/// A boolean-valued operand — produced by the predicate ops (``FirmataTaskRecorder``'s
+/// `json.stringEquals`, `bodyContains`, `digitalRead(pin:)`, …) and consumable directly
+/// by `ifTrue`. Backed by a `0`/`1` integer register or a literal.
+public final class BoolOperand: TaskOperand, @unchecked Sendable {
+    /// A compile-time boolean constant.
+    public convenience init(_ value: Bool) {
+        self.init(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(value ? 1 : 0))))
+    }
+}
+
+/// A handle to a **response body** recorded in a task — reach it via
+/// ``TaskHTTPResponse/body`` and pass it to the `board.json` inspection ops
+/// (`board.json.number(body, …)`, `.float`, `.stringEquals`, …).
+///
+/// A *borrowed* handle reads the device's live body, checked for staleness against the
+/// generation captured when the request was recorded (a later request makes it stale —
+/// test it with ``isValid()``). ``JSONOps/snapshot(_:into:)`` upgrades a handle **in place**
+/// to an *owned* one that pins a persisted copy in a slot (so it survives later requests).
+/// It's modelled as a ``TaskOperand`` for naming symmetry with the value operands,
+/// but it carries a source reference rather than a comparable value.
+public final class JSONOperand: TaskOperand, @unchecked Sendable {
+    /// Register holding the body generation captured at request time (borrowed handle).
+    let genReg: UInt8?
+    /// Snapshot slot, once this handle has been snapshotted into an owned, persisted copy.
+    var snapshotSlot: UInt8?
+    /// The recorder that produced this handle (so ``isValid()`` can record into the task).
+    weak var rec: FirmataTaskRecorder?
+
+    init(genReg: UInt8?, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
+        self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
+        super.init(operandBytes: [])
+    }
+    required init(operandBytes: [UInt8]) {
+        self.genReg = nil; self.snapshotSlot = nil; self.rec = nil
+        super.init(operandBytes: operandBytes)
+    }
+
+    /// Record a boolean that is `true` while the captured live body is still the current
+    /// one, and branch on it with ``FirmataTaskRecorder/ifTrue(_:then:elseDo:)``. After a
+    /// newer request replaces the live body this reads `false`; an **owned** snapshot is
+    /// pinned, so it is always valid. (Emits a request-count read + a compare against the
+    /// captured generation — see ``FirmataTaskRecorder/compare(_:_:_:into:)``.)
+    @discardableResult
+    public func isValid() -> BoolOperand {
+        guard snapshotSlot == nil, let gen = genReg, let rec else { return .bool(true) }
+        return rec.compare(.reg(gen), .equal, rec.currentRequestCount())
+    }
+}
+
+/// A handle to an internet request recorded in a task — returned by
+/// ``FirmataTaskRecorder/httpGet(_:statusInto:)`` / ``httpPost(_:body:statusInto:)``.
+/// Branch on ``status`` (the HTTP status register); inspect the payload through
+/// ``body`` with the `board.json` ops.
+public struct TaskHTTPResponse: Sendable {
+    /// Operand for the register holding the HTTP status code (`0` on failure).
+    public let status: NumberOperand
+    /// Handle to the response body for the `board.json` inspection ops.
+    public let body: JSONOperand
+}
+
+/// Result-status codes the device records for an inspection op (matches the firmware's
+/// `ST_*` values). Staleness of a borrowed body handle is surfaced on the host via
+/// ``JSONOperand/isValid()``.
+public enum TaskResultStatus: Int32, Sendable {
+    case ok = 0, notFound = 1, stale = 2, typeMismatch = 3, tooBig = 4, allocFailed = 5
+}
+
+/// JSON value kinds returned by ``FirmataTaskRecorder/jsonType(_:into:)``.
+/// Compare a `jsonType` result against `.number.rawValue` etc. via `.const`.
+public enum TaskJSONValueType: Int32, Sendable {
+    case missing = 0, object = 1, array = 2, string = 3, number = 4, bool = 5, null = 6
 }
 
 /// A comparison for ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``.
 /// (Non-standard extension.)
-public enum SchedulerComparison: UInt8, Sendable {
+public enum TaskComparison: UInt8, Sendable {
     case equal          = 0
     case notEqual       = 1
     case lessThan       = 2

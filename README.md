@@ -4,6 +4,16 @@ A modern, concurrency-safe [Firmata](https://github.com/firmata/protocol) client
 
 Built on Swift’s structured concurrency: the client is an `actor`, every public API is `async`, and incoming messages are delivered as an `AsyncStream`.
 
+## The project suite
+
+Part of a three-repo Firmata-for-ESP32 suite — grab whichever piece you need:
+
+- **[SwiftFirmataClient](https://github.com/doraorak/SwiftFirmataClient)** — the macOS/iOS Swift client package *(this repo)*.
+- **[ESP32FirmataSwift](https://github.com/doraorak/ESP32FirmataSwift)** — Embedded-Swift ESP32 firmware (Wi-Fi/Bonjour + BLE) with the on-device logic + internet extension.
+- **[ESP32Firmata](https://github.com/doraorak/ESP32Firmata)** — the C++/Arduino firmware port (same wire protocol).
+
+📖 **[COOKBOOK.md](COOKBOOK.md)** — copy-paste, in-depth snippets for **every** client feature (connection, I/O, queries, I2C, internet actions, scheduler tasks, on-device logic).
+
 ```swift
 let client = FirmataClient(transport: BonjourTransport())
 await client.connect()
@@ -163,16 +173,20 @@ branch with `ifTrue`:
 // A night-light running entirely on the board, no client connected.
 try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
     t.setPinMode(2, mode: .output)
-    t.readAnalog(into: 0, channel: 0)                 // R0 = analog A0
-    t.ifTrue(.reg(0), .lessThan, .const(300),         // dark?
+    t.analogRead(into: 0, channel: 0)                 // R0 = analog A0
+    t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
 ```
 
-- `setRegister(_:to:)`, `readDigital(into:pin:)`, `readAnalog(into:channel:)`
-- `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.const(value)`;
+- `setRegister(_:to:)`, `digitalRead(into:pin:)`, `analogRead(into:channel:)`. The
+  register-returning reads are **typed**: `digitalRead(pin:)` → `BoolOperand`,
+  `analogRead(channel:)` → `NumberOperand`.
+- `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.number(value)`;
   comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
+- `compare(a, op, b)` → a reusable `BoolOperand`; `ifTrue(boolOperand) { … }` branches on
+  a bool directly (a `digitalRead`, a JSON predicate, or an `isValid()` result).
 - `channel` is an analog channel index (`A0 = 0`, …), **not** a pin number.
 
 ### Internet actions (scheduler extension)
@@ -182,36 +196,70 @@ request and inspect the response — so the device can talk to web services on i
 own, with no host connected. `https://` is supported with **on-device
 certificate validation** (a browser-style root-CA bundle).
 
-The request stores only the **HTTP status** in a register; the response **body is
-retained on the device**, and you pull values out of it with the inspection ops
-(`jsonNumber`, `jsonStringEquals`, `jsonStringContains`, `bodyContains`), which
-return register operands you can branch on:
+`httpGet` returns a **`TaskHTTPResponse`**; branch on `.status`, and pass `.body` to the
+`board.json` ops to inspect the payload:
 
 ```swift
 // Every minute: green LED if SPY is up on the day, red if it's down — no host.
-try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { t in
-    t.setPinMode(2, mode: .output); t.setPinMode(4, mode: .output)
-    t.httpGet("https://example.com/quote/SPY", statusInto: 0)
+try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
+    board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
+    let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled (×100):
     //   -0.42  ->  -42 ;  path may be dotted/indexed: "result[0].changePercent"
-    let pct = t.jsonNumber("changePercent", scaledBy: 2)
-    t.ifTrue(pct, .greaterThan, .const(0),
-        then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
-        elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+    let pct = board.json.number(spy.body, "changePercent", scaledBy: 2)
+    board.ifTrue(spy.status, .equal, .number(200)) {           // only act on success
+        $0.ifTrue(pct, .greaterThan, .number(0),
+            then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
+            elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+    }
 }
 ```
 
-- `httpGet(_:statusInto:)` / `httpPost(_:body:statusInto:)` — `R[statusInto]` =
-  HTTP status (`0` = Wi-Fi down / failure). The body is kept for inspection.
-- Inspection ops (operate on the **last** response body), each returns the result
-  register as a `SchedulerOperand` for `ifTrue` (destination auto-allocated R15↓,
-  or pass `into:`):
-  - `jsonNumber(_ path:, scaledBy:, into:, found:)` — number at `path` × 10ⁿ
-    (truncated, so fractions survive in the Int32). `found` register is `1`/`0`.
-  - `jsonStringEquals(_ path:, _ value:)` / `jsonStringContains(_ path:, _ sub:)`
-    — compare the JSON string at `path`. Result `1`/`0`.
-  - `bodyContains(_ text:)` — raw substring search over the whole body. `1`/`0`.
-  - `path` is dotted with array indices: `quoteResponse.result[0].regularMarketChangePercent`.
+- `httpGet(_:)` / `httpPost(_:body:)` **return a `TaskHTTPResponse`** — branch on
+  `resp.status` (HTTP status; `0` = Wi-Fi down / failure). Status register
+  auto-allocates (or pass `statusInto:`). The body is retained for inspection via `resp.body`.
+- **`board.json` ops** take the body handle (`resp.body`, a `JSONOperand`) and return a
+  **typed** result operand (auto-allocated R15↓ or via `into:`). They select the body's
+  source automatically (no manual step):
+  - `json.number(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
+    parses a **quoted** number `"593.2"`). `json.float(body, path)` → `FloatOperand`.
+  - `json.stringEquals(body, path, value)` / `json.stringContains(body, path, sub)`
+    / `json.bodyContains(body, text)` → `BoolOperand`.
+  - `json.type(body, path)` → a `TaskJSONValueType` raw value — branch before extracting.
+  - `json.size(body, path)` / `json.stringLength(body, path)` size a value; pair
+    with `board.heapStats(freeInto:largestInto:)` to **gate a store on free memory**.
+  - `path` is dotted/indexed: `quoteResponse.result[0].regularMarketChangePercent`.
+    Inspection walks the **full** body (no parse-size cap).
+- **Arithmetic** on `board` — integer `add`/`subtract`/`multiply`/`divide`/`modulo(_:_:into:)`
+  (→ `NumberOperand`) and **float** `addFloat`/`subtractFloat`/`multiplyFloat`/`divideFloat`
+  (→ `FloatOperand`). 16 int registers + **8 float registers (F0–F7)**;
+  `setFloatRegister(_:to:)` loads a literal; operands mix (ints promote). Percent change
+  on-device with floats:
+  ```swift
+  let spy   = board.httpGet(url)
+  let price = board.json.float(spy.body, "regularMarketPrice")   // e.g. 746.74
+  let prev  = board.json.float(spy.body, "chartPreviousClose")
+  let pct   = board.multiplyFloat(board.divideFloat(board.subtractFloat(price, prev), prev),
+                                  .float(100))                    // % change
+  board.ifTrue(pct, .greaterThan, .float(0.5)) { … }             // up > 0.5%?
+  ```
+- **Holding bodies (handles).** Each `board.json` op reads the body handle you pass.
+  To compare two responses, or keep one across the next request, `snapshot` it (one of 2
+  grow-only slots) — this **upgrades the handle in place** to an owned copy that outlives
+  later requests. A *borrowed* (non-snapshotted) handle goes **stale** once a newer request
+  replaces the live body; guard it with `body.isValid()`:
+  ```swift
+  let a = board.httpGet(urlA); board.json.snapshot(a.body)   // a.body now owns a snapshot
+  let b = board.httpGet(urlB)                                 // a's live body would be stale
+  let aVal = board.json.number(a.body, "price")              // from A (snapshot)
+  let bVal = board.json.number(b.body, "price")              // from B (live)
+  board.ifTrue(bVal, .greaterThan, aVal) { … }
+  board.json.free(a.body)
+  // staleness: only trust a borrowed read while its body is still current:
+  let c    = board.httpGet(urlC)
+  let cVal = board.json.number(c.body, "price")
+  board.ifTrue(c.body.isValid()) { … }   // -> compares captured generation vs current
+  ```
 - If a host is connected while the task runs, the full result also arrives as
   `FirmataMessage.httpResponse(status:body:)` on the `messages` stream.
 
@@ -231,8 +279,9 @@ let p = try await client.httpPost("https://example.com/log", body: #"{"on":true}
 - The device performs the request and **blocks briefly** (up to ~8 s) while it
   does; `httpGet`/`httpPost` take a `timeout` (default 15 s).
 - **URL/body must be ASCII** and fit one SysEx frame (URL + body ≲ 500 bytes).
-- The body returned to the host is capped at **~4 KB** (enough for typical JSON
-  API responses; not for large downloads).
+- On-device inspection (`jsonNumber`/string ops) parses the **full** body. The copy
+  echoed **back to a connected host** is capped at **~4 KB** (typical JSON responses
+  fit; not for large downloads).
 - **`https://` is certificate-validated on-device** against the firmware's bundled
   root CAs (requires firmware with the TLS client; see the firmware README).
 
@@ -255,20 +304,52 @@ JSON_NUM       F0 7B 7F 16 <dst> <found> <scale> <pathLen:2> <path…>     F7
 JSON_STR_EQ    F0 7B 7F 17 <dst> <pathLen:2> <path…> <strLen:2> <str…>   F7
 BODY_CONTAINS  F0 7B 7F 18 <dst> <strLen:2> <str…>                       F7
 JSON_STR_CONT  F0 7B 7F 19 <dst> <pathLen:2> <path…> <strLen:2> <str…>   F7
+ARITH          F0 7B 7F 1A <subop> <dst> <operandA> <operandB>          F7  // R[dst] = A op B (int)
+SET_FLOAT      F0 7B 7F 1B <fdst> <const:5>                             F7  // F[fdst] = float
+ARITH_F        F0 7B 7F 1C <subop> <fdst> <operandA> <operandB>         F7  // F[fdst] = A op B (float)
+JSON_FLOAT     F0 7B 7F 1D <fdst> <found> <pathLen:2> <path…>           F7  // F[fdst] = json float
+JSON_TYPE      F0 7B 7F 1E <dst> <pathLen:2> <path…>                    F7  // R[dst] = type at path
+JSON_SIZE      F0 7B 7F 1F <dst> <pathLen:2> <path…>                    F7  // R[dst] = span byte length
+STR_LEN        F0 7B 7F 20 <dst> <pathLen:2> <path…>                    F7  // R[dst] = string content length
+HEAP           F0 7B 7F 21 <freeReg> <largestReg>                       F7  // R = free heap / largest block
+BODY_GEN       F0 7B 7F 22 <dst>                                        F7  // R[dst] = response generation
+SNAPSHOT       F0 7B 7F 23 <slot> <pathLen:2> <path…>                   F7  // copy value -> snapshot slot
+SELECT         F0 7B 7F 24 <sel> <expGenReg>                            F7  // 0=live(gen-checked), k=snap k-1
+FREE           F0 7B 7F 25 <slot>                                       F7  // free a snapshot slot
+LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R[dst] = last inspection status
 ```
 
-- `<reg>`: register index, low nibble (`0`–`15`).
+- `<reg>`: int register index, low nibble (`0`–`15`). `<fdst>`: float register (`0`–`7`).
 - `<op>`: `0 ==`, `1 !=`, `2 <`, `3 >`, `4 <=`, `5 >=`.
-- `<operand>`: a type byte then data — `00 <reg>` (register) or `01 <const:5>` (literal).
+- `<operand>`: a type byte then data — `00 <reg>` (int register), `01 <const:5>` (int
+  literal), `02 <freg>` (float register), or `03 <const:5>` (float literal, IEEE754
+  bits). `IF`/`ARITH` accept any type; if either side is float the device promotes.
 - `if`/`else` layout: `[IF skip=thenLen] [then…] [SKIP skip=elseLen] [else…]` — a
   false `IF` skips the then-block (landing on `else`); a true one runs `then`,
   whose trailing `SKIP` jumps over `else`.
 - `HTTP` (`0x15`): `<method>` `0`=GET `1`=POST; sets `R[statusReg]` = HTTP status
   (`0` on failure) and retains the body. POST sends `Content-Type: application/json`.
 - `JSON_NUM` (`0x16`): `R[dst]` = number at `<path>` × 10^`<scale>` (truncated),
-  `R[found]` = `1`/`0`. `JSON_STR_EQ`/`JSON_STR_CONT` (`0x17`/`0x19`): `R[dst]` =
-  `1`/`0` from comparing the JSON string at `<path>`. `BODY_CONTAINS` (`0x18`):
-  `R[dst]` = `1`/`0` substring search over the whole body.
+  `R[found]` = `1`/`0`. Also parses a **quoted** number (`"593.2"`), so string-typed
+  prices work. `JSON_STR_EQ`/`JSON_STR_CONT` (`0x17`/`0x19`): `R[dst]` = `1`/`0` from
+  comparing the JSON string at `<path>`. `BODY_CONTAINS` (`0x18`): `R[dst]` = `1`/`0`
+  substring over the whole body. All inspection ops walk the **full** retained body
+  (no parse-size cap).
+- `ARITH` (`0x1A`): `<subop>` `0`=+ `1`=− `2`=× `3`=÷ `4`=%. `R[dst]` = A op B (operands
+  as above). 64-bit intermediates avoid overflow; `÷`/`%` by zero yield `0`.
+- Floats: 8 registers `F0`–`F7`. `SET_FLOAT` (`0x1B`) loads a literal; `ARITH_F`
+  (`0x1C`, subops `0`=+ `1`=− `2`=× `3`=÷) does float math; `JSON_FLOAT` (`0x1D`)
+  reads a JSON number (quoted / fractional / exponent) into `F[fdst]`, `R[found]`=`1`/`0`.
+- Query ops: `JSON_TYPE` (`0x1E`) → `0` none, `1` object, `2` array, `3` string,
+  `4` number, `5` bool, `6` null. `JSON_SIZE` (`0x1F`) → span byte length. `STR_LEN`
+  (`0x20`) → string content length. `HEAP` (`0x21`) → free heap + largest block.
+- Handles (3b2): `BODY_GEN` (`0x22`) captures the current generation. `SNAPSHOT`
+  (`0x23`) copies a value into one of 2 grow-only slots that survive the next
+  request. `SELECT` (`0x24`) chooses the inspection source — a snapshot, or the
+  live body checked against a captured generation (a borrowed source selected
+  after a newer request reads as **stale**). `FREE` (`0x25`) releases a slot.
+  `LAST_STATUS` (`0x26`) → status of the last inspection op
+  (`0` ok, `1` notFound, `2` stale, `3` typeMismatch, `4` tooBig, `5` allocFailed).
 
 The device replies (only when a host is connected) with the result:
 
@@ -326,12 +407,19 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 | **Extension¹** — internet | `httpGet(_:timeout:) -> HTTPResponse`, `httpPost(_:body:timeout:) -> HTTPResponse` |
 
 `FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
-`digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)` — plus the
-**extension¹** ops: `setRegister`, `readDigital(into:)`/`digitalRead(pin:)`,
-`readAnalog(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
-`httpGet(_:statusInto:)`, `httpPost(_:body:statusInto:)`, and the response-inspection
-ops `jsonNumber(_:scaledBy:into:found:)`, `jsonStringEquals(_:_:into:)`,
-`jsonStringContains(_:_:into:)`, `bodyContains(_:into:)`.
+`digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)`, plus
+**I2C** `i2cConfig(delayMicroseconds:)` / `i2cWrite(address:data:is10Bit:)` (drive an
+I2C device — e.g. an SSD1306 OLED — from a task) — plus the
+**extension¹** ops: `setRegister`, `digitalRead(into:)`/`digitalRead(pin:)`,
+`analogRead(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
+`ifTrue(_:then:elseDo:)` (bool operand), `compare(_:_:_:into:)`,
+`httpGet(_:) -> TaskHTTPResponse`, `httpPost(_:body:) -> TaskHTTPResponse`,
+integer arithmetic `add`/`subtract`/`multiply`/`divide`/`modulo(_:_:into:)`,
+float `setFloatRegister(_:to:)` / `addFloat`/`subtractFloat`/`multiplyFloat`/`divideFloat(_:_:into:)`,
+`heapStats(freeInto:largestInto:)`, and the **`board.json`** namespace —
+`number`/`float`/`stringEquals`/`stringContains`/`bodyContains`/`type`/`size`/`stringLength`
+(each taking a `resp.body` handle), plus `snapshot(_:into:)` (in-place) / `free(_:)`, with
+borrowed-handle freshness via `body.isValid()`.
 
 > **¹ Non-standard extension — requires supported firmware.** The on-device logic
 > (registers / `if`-`else`) and internet actions are **not part of standard Firmata**.
@@ -359,7 +447,7 @@ public protocol FirmataTransport: Sendable {
    whichever transport you supply. The client speaks Firmata protocol v2.x.
 
 2. **Extension features (require *this project's* firmware).** The on-device
-   **logic extension** (16 registers, `readDigital`/`readAnalog`, `ifTrue`) and
+   **logic extension** (16 registers, `digitalRead`/`analogRead`, `ifTrue`/`compare`) and
    **internet actions** (`httpGet`/`httpPost`, live and in tasks) are a
    **non-standard extension**. They are carried under the Scheduler's reserved
    `EXTENDED_SCHEDULER_COMMAND` (`0x7F`), so a stock Firmata board **ignores them

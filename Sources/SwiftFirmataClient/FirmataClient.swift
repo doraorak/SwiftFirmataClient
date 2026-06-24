@@ -337,8 +337,8 @@ public actor FirmataClient {
     ///   - channel: The analog channel number (A0 = `0`, A1 = `1`, …), per
     ///     ``queryAnalogMapping()``.
     ///   - enable: `true` to start sampling, `false` to stop.
-    public func reportAnalogPin(_ channel: UInt8, enable: Bool) async throws {
-        let cmd: UInt8 = Cmd.reportAnalogPin | (channel & 0x0F)
+    public func reportAnalogChannel(_ channel: UInt8, enable: Bool) async throws {
+        let cmd: UInt8 = Cmd.reportAnalogChannel | (channel & 0x0F)
         try await transport.send([cmd, enable ? 0x01 : 0x00])
         if enable { analogReportingChannels.insert(channel) } else { analogReportingChannels.remove(channel) }
     }
@@ -361,7 +361,7 @@ public actor FirmataClient {
     /// - Throws: ``FirmataError/noResponse`` if no sample arrives within `timeout`.
     public func analogRead(channel: UInt8, timeout: Duration = .seconds(2)) async throws -> UInt16 {
         let wasReporting = analogReportingChannels.contains(channel)
-        try await reportAnalogPin(channel, enable: true)
+        try await reportAnalogChannel(channel, enable: true)
         let id = nextReadID()
         do {
             let value: UInt16 = try await withCheckedThrowingContinuation { cont in
@@ -371,10 +371,10 @@ public actor FirmataClient {
                     await self?.timeoutAnalogRead(id)
                 }
             }
-            if !wasReporting { try? await reportAnalogPin(channel, enable: false) }
+            if !wasReporting { try? await reportAnalogChannel(channel, enable: false) }
             return value
         } catch {
-            if !wasReporting { try? await reportAnalogPin(channel, enable: false) }
+            if !wasReporting { try? await reportAnalogChannel(channel, enable: false) }
             throw error
         }
     }
@@ -668,10 +668,10 @@ public actor FirmataClient {
         id: UInt8 = 1,
         startDelayMs: UInt32 = 0,
         repeatEveryMs: UInt32? = nil,
-        _ build: (inout FirmataTaskRecorder) -> Void
+        _ build: (FirmataTaskRecorder) -> Void
     ) async throws {
-        var recorder = FirmataTaskRecorder()
-        build(&recorder)
+        let recorder = FirmataTaskRecorder()
+        build(recorder)
         if let period = repeatEveryMs { recorder.delay(ms: period) }
         let data = recorder.bytes
 

@@ -55,7 +55,7 @@ public enum I2CMode: UInt8, Sendable {
 enum Cmd {
     static let analogMessage:      UInt8 = 0xE0  // | channel (0-15)
     static let digitalMessage:     UInt8 = 0x90  // | port    (0-15)
-    static let reportAnalogPin:    UInt8 = 0xC0  // | channel
+    static let reportAnalogChannel:    UInt8 = 0xC0  // | channel
     static let reportDigitalPort:  UInt8 = 0xD0  // | port
     static let setPinMode:         UInt8 = 0xF4
     static let setDigitalPinValue: UInt8 = 0xF5
@@ -102,8 +102,8 @@ enum Sched {
     // reserved extension command (0x7F), so a base scheduler ignores it cleanly.
     static let extCommand:     UInt8 = 0x7F  // EXTENDED_SCHEDULER_COMMAND
     static let extSet:         UInt8 = 0x10  // R[d] = const
-    static let extReadDigital: UInt8 = 0x11  // R[d] = digitalRead(pin)
-    static let extReadAnalog:  UInt8 = 0x12  // R[d] = analogRead(channel)
+    static let extDigitalRead: UInt8 = 0x11  // R[d] = digitalRead(pin)
+    static let extAnalogRead:  UInt8 = 0x12  // R[d] = analogRead(channel)
     static let extIf:          UInt8 = 0x13  // if !(a op b) skip N bytes
     static let extSkip:        UInt8 = 0x14  // unconditional skip N bytes
     static let extHttp:        UInt8 = 0x15  // make an HTTP(S) request over Wi-Fi
@@ -112,4 +112,18 @@ enum Sched {
     static let extJsonStrEq:   UInt8 = 0x17  // R[dst] = (json string at path == s) ? 1 : 0
     static let extBodyContains: UInt8 = 0x18 // R[dst] = body contains s ? 1 : 0
     static let extJsonStrContains: UInt8 = 0x19 // R[dst] = (json string at path contains s) ? 1 : 0
+    static let extArith:       UInt8 = 0x1A  // R[dst] = A <op> B  (op: 0+ 1- 2* 3/ 4%)
+    static let extSetFloat:    UInt8 = 0x1B  // F[dst] = float const
+    static let extArithFloat:      UInt8 = 0x1C  // F[dst] = A <op> B  (float; op 0+ 1- 2* 3/)
+    static let extJsonFloat:   UInt8 = 0x1D  // F[dst] = json float at path; R[found]
+    static let extJsonType:    UInt8 = 0x1E  // R[dst] = json type at path
+    static let extJsonSize:    UInt8 = 0x1F  // R[dst] = byte length of value span at path
+    static let extStrLen:      UInt8 = 0x20  // R[dst] = content length of json string at path
+    static let extHeap:        UInt8 = 0x21  // R[freeReg]=free heap, R[largestReg]=largest block
+    static let extRequestCount:     UInt8 = 0x22  // R[dst] = current request count (internal)
+    static let extSnapshot:    UInt8 = 0x23  // copy value at path from live body into a slot
+    static let extSelect:      UInt8 = 0x24  // pick inspection source (0=live, k=snapshot k-1)
+    static let extFree:        UInt8 = 0x25  // free a snapshot slot
+    static let extLastStatus:  UInt8 = 0x26  // R[dst] = status of last inspection op
+    static let extCmp:         UInt8 = 0x27  // R[dst] = (A op B) ? 1 : 0
 }

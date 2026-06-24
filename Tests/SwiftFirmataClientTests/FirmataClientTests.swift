@@ -86,9 +86,9 @@ struct FirmataClientTests {
         #expect(transport.lastSent == [0xF0, 0x6F, 9, 0x68, 0x07, 0xF7])
     }
 
-    @Test func reportAnalogPin() async throws {
+    @Test func reportAnalogChannel() async throws {
         let (client, transport) = await makeClient()
-        try await client.reportAnalogPin(0, enable: true)
+        try await client.reportAnalogChannel(0, enable: true)
         #expect(transport.lastSent == [0xC0, 0x01])
     }
 
@@ -216,16 +216,13 @@ struct FirmataClientTests {
 
     @Test func analogMessageDeliveredToStream() async throws {
         let (client, transport) = await makeClient()
-        var received: FirmataMessage?
-        let task = Task {
-            for await msg in client.messages {
-                received = msg
-                break
-            }
+        let task = Task { () -> FirmataMessage? in
+            for await msg in client.messages { return msg }
+            return nil
         }
         await Task.yield()
         transport.injectAnalog(channel: 0, value: 512)
-        await task.value
+        let received = await task.value
         guard case .analog(let ch, let val) = received else {
             Issue.record("Expected .analog in stream"); return
         }
@@ -234,16 +231,13 @@ struct FirmataClientTests {
 
     @Test func digitalMessageDeliveredToStream() async throws {
         let (client, transport) = await makeClient()
-        var received: FirmataMessage?
-        let task = Task {
-            for await msg in client.messages {
-                received = msg
-                break
-            }
+        let task = Task { () -> FirmataMessage? in
+            for await msg in client.messages { return msg }
+            return nil
         }
         await Task.yield()
         transport.injectDigital(port: 2, pinMask: 0b00001111)
-        await task.value
+        let received = await task.value
         guard case .digital(let port, let mask) = received else {
             Issue.record("Expected .digital in stream"); return
         }
@@ -252,16 +246,13 @@ struct FirmataClientTests {
 
     @Test func stringMessageDeliveredToStream() async throws {
         let (client, transport) = await makeClient()
-        var received: FirmataMessage?
-        let task = Task {
-            for await msg in client.messages {
-                received = msg
-                break
-            }
+        let task = Task { () -> FirmataMessage? in
+            for await msg in client.messages { return msg }
+            return nil
         }
         await Task.yield()
         transport.injectString("hello")
-        await task.value
+        let received = await task.value
         guard case .stringData(let s) = received else {
             Issue.record("Expected .stringData in stream"); return
         }
@@ -272,14 +263,13 @@ struct FirmataClientTests {
 
     @Test func disconnectCancelsStream() async throws {
         let (client, transport) = await makeClient()
-        var streamEnded = false
-        let task = Task {
+        let task = Task { () -> Bool in
             for await _ in client.messages {}
-            streamEnded = true
+            return true
         }
         await Task.yield()
         await client.disconnect()
-        await task.value
+        let streamEnded = await task.value
         #expect(streamEnded)
         _ = transport  // suppress unused warning
     }

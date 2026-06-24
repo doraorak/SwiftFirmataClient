@@ -16,8 +16,8 @@ struct SchedulerLogicTests {
 
     @Test func readDigitalAndAnalogEncoding() {
         var r = FirmataTaskRecorder()
-        r.readDigital(into: 1, pin: 7)
-        r.readAnalog(into: 2, channel: 0)
+        r.digitalRead(into: 1, pin: 7)
+        r.analogRead(into: 2, channel: 0)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x11, 0x01, 0x07, 0xF7,   // R1 = digitalRead(7)
             0xF0, 0x7B, 0x7F, 0x12, 0x02, 0x00, 0xF7,   // R2 = analogRead(A0)
@@ -26,7 +26,7 @@ struct SchedulerLogicTests {
 
     @Test func ifElseLaysOutSkipsCorrectly() {
         var r = FirmataTaskRecorder()
-        r.ifTrue(.reg(0), .greaterThan, .const(512),
+        r.ifTrue(.reg(0), .greaterThan, .number(512),
             then:   { $0.digitalWrite(pin: 2, high: true) },
             elseDo: { $0.digitalWrite(pin: 2, high: false) })
 
@@ -59,10 +59,38 @@ struct SchedulerLogicTests {
         ])
     }
 
+    @Test func compareEncodesOpDstThenOperands() {
+        var r = FirmataTaskRecorder()
+        let isUp = r.compare(.reg(0), .greaterThan, .number(0), into: 5)
+        // EXT CMP (0x27) op=greaterThan(3) dst=R5, a=reg0, b=const0
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x27, 0x03, 0x05,   // CMP op=greaterThan dst=R5
+            0x00, 0x00,                           //   a = reg 0
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00,   //   b = const 0
+            0xF7,
+        ])
+        #expect(isUp.register == 5)
+    }
+
+    @Test func ifTrueBoolOperandLowersToNotEqualZero() {
+        // The BoolOperand overload is sugar for `ifTrue(cond, .notEqual, .number(0))`.
+        var explicit = FirmataTaskRecorder()
+        explicit.ifTrue(.reg(3), .notEqual, .number(0),
+            then:   { $0.digitalWrite(pin: 2, high: true) },
+            elseDo: { $0.digitalWrite(pin: 2, high: false) })
+
+        var sugar = FirmataTaskRecorder()
+        sugar.ifTrue(.boolReg(3),
+            then:   { $0.digitalWrite(pin: 2, high: true) },
+            elseDo: { $0.digitalWrite(pin: 2, high: false) })
+
+        #expect(sugar.bytes == explicit.bytes)
+    }
+
     @Test func nestedIfSkipCountsIncludeInnerBytes() {
         var r = FirmataTaskRecorder()
-        r.ifTrue(.reg(0), .greaterThan, .const(0)) { t in
-            t.ifTrue(.reg(1), .lessThan, .const(10)) { $0.digitalWrite(pin: 2, high: true) }
+        r.ifTrue(.reg(0), .greaterThan, .number(0)) { t in
+            t.ifTrue(.reg(1), .lessThan, .number(10)) { $0.digitalWrite(pin: 2, high: true) }
         }
         // Inner if (no else): IF message [16: F0 7B 7F 13 op + a(reg,2) + b(const,6)
         // + skip2 + F7] + then digitalWrite [3] = 19 bytes. The outer if's skip must
