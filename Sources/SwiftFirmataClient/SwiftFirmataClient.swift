@@ -17,4 +17,7 @@ public enum FirmataError: Error, Sendable {
     case transportClosed
     case invalidData
     case noResponse
+    /// Wi-Fi provisioning: the device rejected the credentials (the encrypted
+    /// handshake failed to authenticate — wrong key / tampered / corrupted frame).
+    case wifiCredentialsRejected
 }

@@ -31,6 +31,7 @@ any task. Add `import SwiftFirmataClient` at the top of each file.
 19. [Snapshots & staleness (`snapshot`, `isValid`, `free`)](#19-snapshots--staleness)
 20. [Custom transport](#20-custom-transport)
 21. [Type reference](#21-type-reference)
+22. [Wi-Fi provisioning (encrypted, over BLE)](#22-wi-fi-provisioning-encrypted-over-ble)
 
 ---
 
@@ -681,8 +682,10 @@ enum FirmataMessage {
     case unknownSysEx(id: UInt8, data: [UInt8])
 }
 
+struct WiFiStatus { let connected: Bool; let ip: String? }   // provisioning result
+
 enum FirmataDisconnectReason { case localRequest, replacedByAnotherClient, transportClosed }
-enum FirmataError: Error     { case transportClosed, invalidData, noResponse }
+enum FirmataError: Error     { case transportClosed, invalidData, noResponse, wifiCredentialsRejected }
 
 // ── Scheduler / logic extension ──────────────────────────────────────────────
 struct SchedulerTask { let id: UInt8; let timeMs: UInt32; let length, position: Int; let data: [UInt8] }
@@ -705,3 +708,28 @@ enum TaskResultStatus:   Int32  { case ok, notFound, stale, typeMismatch, tooBig
 > *value* (`Bool` / `UInt16`) right now. The recorder's `t.digitalRead(pin:)` /
 > `analogRead(channel:)` instead return an **operand** (a register) for use in on-device
 > logic, because a task has no host to hand a value back to.
+
+## 22. Wi-Fi provisioning (encrypted, over BLE)
+
+Hand the board its Wi-Fi credentials at runtime — typically over **BLE**, before Wi-Fi is up — so a prebuilt firmware (placeholder creds) can join *your* network with no rebuild. The handshake is an ephemeral **X25519 ECDH → HKDF-SHA256 → AES-256-GCM**, so the password is never sent in the clear (no BLE pairing required).
+
+```swift
+let client = FirmataClient(transport: BLETransport())   // Wi-Fi is down → connect over BLE
+await client.connect()
+
+// Encrypted set + (re)connect. Returns once the device reports back.
+// Throws .wifiCredentialsRejected if the handshake failed to authenticate
+// (wrong key / tampered frame), or .noResponse on timeout.
+let status = try await client.provisionWiFi(ssid: "MyNetwork", password: "hunter2")
+print(status.connected, status.ip ?? "—")               // e.g. true 192.168.1.50
+
+let now = try await client.queryWiFiStatus()            // check without changing anything
+try await client.forgetWiFi()                           // clear stored creds → revert to compile-time
+```
+
+- Provisioned creds are saved on the device (**NVS**) and **override** the compile-time
+  `WIFI_SSID` / `WIFI_PASS` on every boot.
+- It's transport-agnostic (works over Bonjour/TCP too), but BLE is the point — you use it
+  precisely when Wi-Fi isn't up yet.
+- **Security:** defeats a passive eavesdropper with forward secrecy; with no pairing it is
+  *not* hardened against an active real-time man-in-the-middle during the handshake.

@@ -65,6 +65,21 @@ enum Cmd {
     static let endSysEx:           UInt8 = 0xF7
 }
 
+/// Encrypted Wi-Fi provisioning (non-standard; top-level SysEx in Firmata's
+/// reserved user range). Hand the board Wi-Fi credentials — typically over BLE
+/// before Wi-Fi is up — via an ephemeral X25519 ECDH handshake
+/// (HKDF-SHA256 → AES-256-GCM). Binary fields are sent as 14-bit LSB/MSB pairs.
+enum WiFiCfg {
+    static let command: UInt8 = 0x0C
+    static let set:     UInt8 = 0x00  // host→dev: <clientPub><nonce><ciphertext+tag>
+    static let forget:  UInt8 = 0x01  // host→dev: clear stored creds
+    static let query:   UInt8 = 0x02  // host→dev: request status
+    static let begin:   UInt8 = 0x03  // host→dev: start handshake
+    static let key:     UInt8 = 0x7E  // dev→host: <devicePub> (32 bytes)
+    static let status:  UInt8 = 0x7F  // dev→host: <code> <ipLen> <ip>  (0 down, 1 connected, 2 rejected)
+    static let hkdfSalt = "firmata-wifi-prov-v1"
+}
+
 enum SysEx {
     static let analogMappingQuery:    UInt8 = 0x69
     static let analogMappingResponse: UInt8 = 0x6A

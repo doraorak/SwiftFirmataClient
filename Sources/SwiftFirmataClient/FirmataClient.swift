@@ -1,3 +1,6 @@
+import Foundation
+import CryptoKit
+
 /// Why a ``FirmataClient`` connection ended.
 public enum FirmataDisconnectReason: Sendable, Equatable {
     /// ``FirmataClient/disconnect()`` was called locally.
@@ -67,6 +70,10 @@ public actor FirmataClient {
     private var readSeq: UInt64 = 0
     private var pendingDigitalRead: [UInt64: (pin: UInt8,     cont: CheckedContinuation<Bool,   Error>)] = [:]
     private var pendingAnalogRead:  [UInt64: (channel: UInt8, cont: CheckedContinuation<UInt16, Error>)] = [:]
+
+    // Encrypted Wi-Fi provisioning handshake (non-standard extension).
+    private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
+    private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
 
     // Which channels/ports we have reporting enabled for (so a one-shot read can
     // restore the prior state instead of clobbering ongoing reporting).
@@ -181,6 +188,9 @@ public actor FirmataClient {
                     .resume(returning: HTTPResponse(status: status, body: body))
             }
 
+        case .unknownSysEx(let id, let data) where id == WiFiCfg.command:
+            handleWiFiConfigReply(data)
+
         default:
             break
         }
@@ -204,6 +214,8 @@ public actor FirmataClient {
         pendingAnalogRead.removeAll()
         for cont in pendingHttp.values { cont.resume(throwing: error) }
         pendingHttp.removeAll()
+        pop(&pendingWiFiKey)?.resume(throwing: error)
+        pop(&pendingWiFiStatus)?.resume(throwing: error)
     }
 
     // MARK: - Digital I/O
@@ -466,6 +478,102 @@ public actor FirmataClient {
                     c.resume(throwing: FirmataError.noResponse)
                 }
             }
+        }
+    }
+
+    // MARK: - Wi-Fi provisioning (encrypted, non-standard extension)
+    //
+    // Hand the board its Wi-Fi credentials over whatever transport is connected
+    // (typically BLE, before Wi-Fi is up). An ephemeral X25519 ECDH handshake
+    // derives an AES-256-GCM key (HKDF-SHA256), so the password is never sent in
+    // the clear — a passive sniffer sees only public keys + ciphertext. Creds are
+    // saved on the device (NVS) and override the compile-time defaults at boot.
+
+    /// Securely set the device's Wi-Fi credentials and have it (re)connect.
+    /// - Returns: the resulting ``WiFiStatus`` (connected + IP).
+    /// - Throws: ``FirmataError/wifiCredentialsRejected`` if the encrypted handshake
+    ///   failed to authenticate (wrong key / tampered frame), or
+    ///   ``FirmataError/noResponse`` on timeout.
+    @discardableResult
+    public func provisionWiFi(ssid: String, password: String,
+                              timeout: Duration = .seconds(25)) async throws -> WiFiStatus {
+        let devPub = try await wifiBeginHandshake(timeout: timeout)        // device ephemeral pubkey
+        let priv = Curve25519.KeyAgreement.PrivateKey()
+        let shared = try priv.sharedSecretFromKeyAgreement(
+            with: Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(devPub)))
+        let key = shared.hkdfDerivedSymmetricKey(using: SHA256.self,
+                    salt: Data(WiFiCfg.hkdfSalt.utf8), sharedInfo: Data(), outputByteCount: 32)
+        let s = Array(ssid.utf8), p = Array(password.utf8)
+        guard s.count <= 127, p.count <= 127 else { throw FirmataError.invalidData }
+        var pt = Data([UInt8(s.count)]); pt.append(contentsOf: s)
+        pt.append(UInt8(p.count));       pt.append(contentsOf: p)
+        let sealed = try AES.GCM.seal(pt, using: key)
+        let payload = [UInt8](priv.publicKey.rawRepresentation)
+                    + [UInt8](sealed.nonce) + [UInt8](sealed.ciphertext) + [UInt8](sealed.tag)
+        let (code, ip) = try await sendWiFiAndAwaitStatus(wifiFrame(WiFiCfg.set, payload), timeout: timeout)
+        if code == 2 { throw FirmataError.wifiCredentialsRejected }
+        return WiFiStatus(connected: code == 1, ip: code == 1 ? ip : nil)
+    }
+
+    /// Ask the device whether it's currently joined to Wi-Fi (and its IP).
+    public func queryWiFiStatus(timeout: Duration = .seconds(5)) async throws -> WiFiStatus {
+        let (code, ip) = try await sendWiFiAndAwaitStatus(wifiFrame(WiFiCfg.query), timeout: timeout)
+        return WiFiStatus(connected: code == 1, ip: code == 1 ? ip : nil)
+    }
+
+    /// Clear any stored (provisioned) credentials; the device falls back to its
+    /// compile-time defaults on the next boot.
+    public func forgetWiFi(timeout: Duration = .seconds(5)) async throws {
+        _ = try await sendWiFiAndAwaitStatus(wifiFrame(WiFiCfg.forget), timeout: timeout)
+    }
+
+    private func wifiFrame(_ sub: UInt8, _ body: [UInt8] = []) -> [UInt8] {
+        [Cmd.startSysEx, WiFiCfg.command, sub] + encodeWiFiPairs(body) + [Cmd.endSysEx]
+    }
+    private func encodeWiFiPairs(_ b: [UInt8]) -> [UInt8] {
+        var o = [UInt8](); o.reserveCapacity(b.count * 2)
+        for x in b { o.append(x & 0x7F); o.append((x >> 7) & 0x01) }
+        return o
+    }
+    private func decodeWiFiPairs(_ b: [UInt8]) -> [UInt8] {
+        var o = [UInt8](); var i = 0
+        while i + 1 < b.count { o.append((b[i] & 0x7F) | ((b[i + 1] & 0x01) << 7)); i += 2 }
+        return o
+    }
+    private func wifiBeginHandshake(timeout: Duration) async throws -> [UInt8] {
+        try await withCheckedThrowingContinuation { cont in
+            pendingWiFiKey = cont
+            Task {
+                do { try await transport.send(wifiFrame(WiFiCfg.begin)) }
+                catch { if let c = pop(&pendingWiFiKey) { c.resume(throwing: error) }; return }
+                try? await Task.sleep(for: timeout)
+                if let c = pop(&pendingWiFiKey) { c.resume(throwing: FirmataError.noResponse) }
+            }
+        }
+    }
+    private func sendWiFiAndAwaitStatus(_ frame: [UInt8], timeout: Duration) async throws -> (Int, String) {
+        try await withCheckedThrowingContinuation { cont in
+            pendingWiFiStatus = cont
+            Task {
+                do { try await transport.send(frame) }
+                catch { if let c = pop(&pendingWiFiStatus) { c.resume(throwing: error) }; return }
+                try? await Task.sleep(for: timeout)
+                if let c = pop(&pendingWiFiStatus) { c.resume(throwing: FirmataError.noResponse) }
+            }
+        }
+    }
+    private func handleWiFiConfigReply(_ data: [UInt8]) {
+        guard let sub = data.first else { return }
+        switch sub {
+        case WiFiCfg.key:
+            pop(&pendingWiFiKey)?.resume(returning: decodeWiFiPairs(Array(data.dropFirst())))
+        case WiFiCfg.status:
+            guard data.count >= 3 else { return }
+            let code = Int(data[1]); let ipLen = Int(data[2])
+            let ipBytes = decodeWiFiPairs(Array(data.dropFirst(3)))
+            let ip = String(decoding: ipBytes.prefix(ipLen), as: UTF8.self)
+            pop(&pendingWiFiStatus)?.resume(returning: (code, ip))
+        default: break
         }
     }
 

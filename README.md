@@ -363,6 +363,24 @@ The base Scheduler messages (`CREATE_TASK` `0x00`, `ADD_TO_TASK` `0x02`,
 `SCHEDULE_TASK` `0x04`, `DELAY_TASK` `0x03`, `QUERY` `0x05`/`0x06`, `RESET` `0x07`)
 are unchanged from standard Firmata.
 
+### Wi-Fi provisioning (encrypted, over BLE)
+
+Give a board its Wi-Fi credentials at runtime — typically over **BLE**, before Wi-Fi is up —
+so a prebuilt firmware (with placeholder creds) can join your network without a rebuild. The
+exchange is an ephemeral **X25519 ECDH → HKDF-SHA256 → AES-256-GCM**, so the password is
+never sent in the clear (no BLE pairing required); the device persists the creds in NVS and
+prefers them over the compile-time defaults.
+
+```swift
+let client = FirmataClient(transport: BLETransport())
+await client.connect()
+let status = try await client.provisionWiFi(ssid: "MyNetwork", password: "hunter2")
+print(status.connected, status.ip ?? "—")     // e.g. true 192.168.1.50
+// also: queryWiFiStatus(), forgetWiFi()
+```
+
+See **[COOKBOOK.md](COOKBOOK.md) §22** for details and the security caveat.
+
 ### Disconnecting
 
 ```swift
@@ -405,6 +423,7 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 | Live reads | `digitalRead(pin:timeout:) -> Bool`, `analogRead(channel:timeout:) -> UInt16` |
 | Scheduler | `uploadTask(id:startDelayMs:repeatEveryMs:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delayMs:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
 | **Extension¹** — internet | `httpGet(_:timeout:) -> HTTPResponse`, `httpPost(_:body:timeout:) -> HTTPResponse` |
+| **Extension¹** — Wi-Fi provisioning | `provisionWiFi(ssid:password:timeout:) -> WiFiStatus`, `queryWiFiStatus(timeout:)`, `forgetWiFi(timeout:)` (encrypted over BLE — see [COOKBOOK](COOKBOOK.md) §22) |
 
 `FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
 `digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)`, plus
