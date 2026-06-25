@@ -93,6 +93,16 @@ public struct I2CReply: Sendable {
 /// Result of an internet request the device made over its Wi-Fi
 /// (non-standard extension). Returned by ``FirmataClient/httpGet(_:timeout:)``
 /// and ``FirmataClient/httpPost(_:body:timeout:)``.
+/// Result of an encrypted Wi-Fi provisioning op (non-standard extension) —
+/// returned by ``FirmataClient/provisionWiFi(ssid:password:timeout:)`` and
+/// ``FirmataClient/queryWiFiStatus(timeout:)``.
+public struct WiFiStatus: Sendable {
+    /// `true` if the device is currently joined to Wi-Fi.
+    public let connected: Bool
+    /// The device's IP address while connected, else `nil`.
+    public let ip: String?
+}
+
 public struct HTTPResponse: Sendable {
     /// HTTP status code (`200`, `404`, …), or `0` if the device's Wi-Fi was down
     /// or the request failed.
