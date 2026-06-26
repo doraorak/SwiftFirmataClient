@@ -389,10 +389,11 @@ carry the *static type* so the API tells you what a value is:
 
 | Type | Made by | Meaning |
 |---|---|---|
-| `NumberOperand` | `.number(_)`, `NumberOperand(_)`, `.reg(_)`, arithmetic, `json.number/type/size/stringLength` | Int32 value / register |
+| `NumberOperand` | `.number(_)`, `NumberOperand(_)`, `.reg(_)`, arithmetic, `json.number/type/size`, `string.length/indexOf/toInt` | Int32 value / register |
 | `FloatOperand` | `.float(_)`, `FloatOperand(_)`, `.freg(_)`, float arithmetic, `json.float` | Float value / register |
-| `BoolOperand` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.stringEquals/stringContains/bodyContains`, `isValid()` | 0/1 result |
+| `BoolOperand` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.bodyContains`, `string.equals/contains`, `isValid()` | 0/1 result |
 | `JSONHandle` | `response.body`, `json.snapshot` | a response-body handle (not a comparable value) |
+| `StringHandle` | `json.getString(body, "path")` | a captured string value, for the `board.string` ops |
 
 ```swift
 // Literals — use these almost everywhere:
@@ -534,18 +535,19 @@ try await client.uploadTask(id: 6) { board in
                                into: 8, found: 9)             // explicit dst + "found" reg
     let fv = board.json.float(body, "regularMarketPrice")     // -> FloatOperand
 
-    // Strings / substrings (→ BoolOperand 0/1):
-    let isUSD  = board.json.stringEquals(body, "currency", "USD")
-    let hasErr = board.json.stringContains(body, "message", "rate limit")
-    let raw    = board.json.bodyContains(body, "\"halted\":true")  // whole-body substring
+    // Whole-body substring test (→ BoolOperand 0/1):
+    let raw    = board.json.bodyContains(body, "\"halted\":true")
 
     // Shape checks before extracting:
     let kind = board.json.type(body, "result[0]")    // -> NumberOperand (TaskJSONValueType raw)
     board.ifTrue(kind, .equal, .number(TaskJSONValueType.number.rawValue)) { _ in /* it's a number */ }
     let span = board.json.size(body, "result")       // byte length of the value span
-    let len  = board.json.stringLength(body, "name") // content length of a JSON string
 
-    _ = (n, n2, fv, isUSD, hasErr, raw, span, len)
+    // String *values*: navigate with getString, then use board.string (next section).
+    let currency = board.json.getString(body, "currency")    // -> StringHandle
+    let isUSD    = board.string.equals(currency, "USD")      // -> BoolOperand
+
+    _ = (n, n2, fv, raw, kind, span, currency, isUSD)
 }
 ```
 
@@ -554,30 +556,32 @@ try await client.uploadTask(id: 6) { board in
 //   .missing 0  .object 1  .array 2  .string 3  .number 4  .bool 5  .null 6
 ```
 
-### Raw strings — `board.string`
+### Strings — `board.json.getString` + `board.string`
 
-When the body isn't JSON (or you just want the **whole** body as text), inspect it with
-`board.string.*` over `response.text` — a `StringHandle`, the raw-text sibling of `body`:
+Navigate to a **string value** with `board.json.getString(body, "path")` — it captures that
+string's content (unquoted) into a snapshot slot and hands back a `StringHandle` — then
+inspect it with `board.string.*`:
 
 ```swift
 try await client.uploadTask(id: 7) { board in
-    let r = board.httpGet("https://example.com/status")   // body e.g. "42 ready"
-    let s = r.text                                        // StringHandle
+    let r = board.httpGet("https://example.com/status")   // {"msg":"42 ready"}
+    let s = board.json.getString(r.body, "msg")           // StringHandle for "42 ready"
 
     let len  = board.string.length(s)                     // -> NumberOperand (byte length)
     let ok   = board.string.contains(s, "ready")          // -> BoolOperand
-    let same = board.string.equals(s, "42 ready")         // -> BoolOperand (whole body ==)
+    let same = board.string.equals(s, "42 ready")         // -> BoolOperand
     let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
     let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
 
     board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
+    board.string.free(s)                                  // release the slot when done
     _ = (len, same, at, n)
 }
 ```
 
-Backed by firmware ext-ops `0x28`–`0x2B` (`contains` reuses `bodyContains` `0x18`).
-`board.string.snapshot(_:)` / `free(_:)` behave exactly as on `body` (§19) — both share
-the same on-device selection machinery, so a `StringHandle` can be snapshotted too.
+`getString` reads the **live** body, so call it right after the `httpGet`; it uses one of the
+2 snapshot slots (release it with `board.string.free`). Backed by firmware op `0x2C` (the
+content copy) plus `0x28`–`0x2B` / `0x18` for the `board.string` ops.
 
 ---
 

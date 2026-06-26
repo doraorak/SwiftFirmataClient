@@ -390,8 +390,7 @@ public final class FirmataTaskRecorder {
         let gReg = allocateGenRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, gReg.register & 0x0F, Cmd.endSysEx]
         return TaskHTTPResponse(status: statusReg,
-                                body: JSONHandle(genReg: gReg, snapshotSlot: nil, rec: self),
-                                text: StringHandle(genReg: gReg, snapshotSlot: nil, rec: self))
+                                body: JSONHandle(genReg: gReg, snapshotSlot: nil, rec: self))
     }
 
     // MARK: Body handles — snapshot / select / free
@@ -471,27 +470,15 @@ public final class FirmataTaskRecorder {
         return dst
     }
 
-    /// Record testing whether the **JSON string** at `path` equals `value`.
-    /// Returns the `0/1` result register.
-    @discardableResult
-    func jsonStringEquals(_ path: String, _ value: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        return jsonStrOp(Sched.extJsonStrEq, path, value, into)
-    }
-
-    /// Record testing whether the **JSON string** at `path` contains `substring`.
-    /// Returns the `0/1` result register.
-    @discardableResult
-    func jsonStringContains(_ path: String, _ substring: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        return jsonStrOp(Sched.extJsonStrContains, path, substring, into)
-    }
-
-    private func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: BoolRegisterOperand?) -> BoolRegisterOperand {
-        let dst = into ?? BoolRegisterOperand(allocateRegister())
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst.register & 0x0F]
+    /// Record copying the **content** (unquoted) of the JSON string at `path` from the
+    /// live body into snapshot `slot` (auto-allocated if nil). Returns the slot used.
+    /// Backs ``JSONOps/getString(_:_:into:)``.
+    func jsonGetString(_ path: String, into slot: UInt8? = nil) -> UInt8 {
+        let s = slot ?? allocateSnapshotSlot()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, s & 0x01]
         appendLengthPrefixed(&m, path)
-        appendLengthPrefixed(&m, s)
         m.append(Cmd.endSysEx); bytes += m
-        return dst
+        return s & 0x01
     }
 
     // MARK: Raw-string ops over the selected body (board.string)
@@ -644,12 +631,6 @@ public final class FirmataTaskRecorder {
     func jsonSize(_ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         queryOp(Sched.extJsonSize, path, into)
     }
-    /// Record `R[dst]` = content length of the JSON string at `path` (`0` if not a string).
-    @discardableResult
-    func stringLength(_ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        queryOp(Sched.extStrLen, path, into)
-    }
-
     private func queryOp(_ op: UInt8, _ path: String, _ into: NumberRegisterOperand?) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst.register & 0x0F]
@@ -694,7 +675,7 @@ public final class FirmataTaskRecorder {
     public var json: JSONOps { JSONOps(rec: self) }
 
     /// Raw-string inspection of a recorded response body — `board.string` ops over a
-    /// ``StringHandle`` (e.g. ``TaskHTTPResponse/text``).
+    /// ``StringHandle`` from ``JSONOps/getString(_:_:into:)``.
     public var string: StringOps { StringOps(rec: self) }
 }
 
@@ -719,18 +700,6 @@ public struct JSONOps {
                       into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
         rec.select(body); return rec.jsonFloat(path, into: into, found: found)
     }
-    /// `R` = (JSON string at `path` == `value`) ? 1 : 0.
-    @discardableResult
-    public func stringEquals(_ body: JSONHandle, _ path: String, _ value: String,
-                             into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        rec.select(body); return rec.jsonStringEquals(path, value, into: into)
-    }
-    /// `R` = (JSON string at `path` contains `substring`) ? 1 : 0.
-    @discardableResult
-    public func stringContains(_ body: JSONHandle, _ path: String, _ substring: String,
-                               into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        rec.select(body); return rec.jsonStringContains(path, substring, into: into)
-    }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
     public func bodyContains(_ body: JSONHandle, _ text: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
@@ -746,10 +715,14 @@ public struct JSONOps {
     public func size(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonSize(path, into: into)
     }
-    /// `R` = content length of the JSON string at `path`.
+    /// Navigate to the **string** value at `path` and capture its content (unquoted) into a
+    /// snapshot slot, returning a ``StringHandle`` for the `board.string` ops. Slot
+    /// auto-allocated (0–1) unless given; release it with `board.string.free(_:)`.
+    /// (Reads the **live** body, so call it right after the `httpGet`.)
     @discardableResult
-    public func stringLength(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(body); return rec.stringLength(path, into: into)
+    public func getString(_ body: JSONHandle, _ path: String, into slot: UInt8? = nil) -> StringHandle {
+        let s = rec.jsonGetString(path, into: slot)
+        return StringHandle(genReg: body.genReg, snapshotSlot: s, rec: rec)
     }
     /// Persist the body into a slot that survives the next request, **upgrading `body` in
     /// place** to an owned handle — call right after the `httpGet` you want to keep.
@@ -759,8 +732,8 @@ public struct JSONOps {
 }
 
 /// Raw-string inspection of a recorded response body (reached via ``FirmataTaskRecorder/string``).
-/// Each call takes a ``StringHandle`` (from ``TaskHTTPResponse/text`` or ``snapshot(_:into:)``):
-/// it selects that source on the device, then records the op. Branch on results with `board.ifTrue`.
+/// Each call takes a ``StringHandle`` from ``JSONOps/getString(_:_:into:)``: it selects that
+/// captured string on the device, then records the op. Branch on results with `board.ifTrue`.
 public struct StringOps {
     let rec: FirmataTaskRecorder
 
@@ -1007,9 +980,9 @@ public final class JSONHandle: @unchecked Sendable, ResponseBodyHandle {
     }
 }
 
-/// A raw-string view of a recorded response body — from ``TaskHTTPResponse/text`` or a
-/// snapshot — inspected with the `board.string` ops. Structurally a body handle like
-/// ``JSONHandle``; the two differ only in which device ops they feed.
+/// A captured string value — produced by ``JSONOps/getString(_:_:into:)``, which copies a
+/// JSON string's content into a snapshot slot — inspected with the `board.string` ops.
+/// Structurally a body handle like ``JSONHandle``; the two differ only in which ops they feed.
 public final class StringHandle: @unchecked Sendable, ResponseBodyHandle {
     let genReg: NumberRegisterOperand
     var snapshotSlot: UInt8?
@@ -1029,15 +1002,15 @@ public final class StringHandle: @unchecked Sendable, ResponseBodyHandle {
 
 /// A handle to an internet request recorded in a task — returned by
 /// ``FirmataTaskRecorder/httpGet(_:statusInto:)`` / ``httpPost(_:body:statusInto:)``.
-/// Branch on ``status``; inspect the payload as JSON via ``body`` (`board.json`) or as
-/// raw text via ``text`` (`board.string`).
+/// Branch on ``status``; inspect the payload as JSON via ``body`` (`board.json`), and
+/// navigate to a string value with `board.json.getString(body, …)` for the `board.string` ops.
 public struct TaskHTTPResponse: Sendable {
     /// Operand for the register holding the HTTP status code (`0` on failure).
     public let status: NumberRegisterOperand
-    /// Handle to the response body for the `board.json` inspection ops.
+    /// Handle to the response body for the `board.json` inspection ops. Navigate to a
+    /// string value with `board.json.getString(body, "path")` to get a ``StringHandle``
+    /// for the `board.string` ops.
     public let body: JSONHandle
-    /// Handle to the response body as raw text for the `board.string` ops.
-    public let text: StringHandle
 }
 
 /// Result-status codes the device records for an inspection op (matches the firmware's
