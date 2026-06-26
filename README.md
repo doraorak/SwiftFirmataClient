@@ -350,6 +350,12 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   after a newer request reads as **stale**). `FREE` (`0x25`) releases a slot.
   `LAST_STATUS` (`0x26`) → status of the last inspection op
   (`0` ok, `1` notFound, `2` stale, `3` typeMismatch, `4` tooBig, `5` allocFailed).
+- Compare + raw string: `CMP` (`0x27`) → `R[dst]` = `(A <op> B) ? 1 : 0` (a reusable
+  boolean register, same operands as `IF`). Raw-string ops over the selected body
+  (`board.string`): `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → whole
+  body == string; `STR_INDEXOF` (`0x2A`) → index of substring, or `-1`; `STR_TO_NUM`
+  (`0x2B`) → parse a leading integer (+ a found flag). `board.string.contains` reuses
+  `BODY_CONTAINS` (`0x18`); `length/equals/indexOf/toInt` work on `response.text`.
 
 The device replies (only when a host is connected) with the result:
 
