@@ -46,8 +46,7 @@ struct InternetActionTests {
     @Test func jsonNumberAutoRegisters() {
         var r = FirmataTaskRecorder()
         let v = r.jsonNumber("id", scaledBy: 2)   // dst auto=15, found auto=14
-        guard let rv = v.register else { Issue.record("expected reg"); return }
-        #expect(rv == 15)
+        #expect(v.register == 15)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x16,
             15, 14, 2,                 // dst=15, found=14, scale=2
@@ -59,8 +58,7 @@ struct InternetActionTests {
     @Test func jsonNumberExplicitRegisters() {
         var r = FirmataTaskRecorder()
         let v = r.jsonNumber("a", into: 3, found: 4)   // scale defaults to 0
-        guard let rv = v.register else { Issue.record("expected reg"); return }
-        #expect(rv == 3)
+        #expect(v.register == 3)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x16, 3, 4, 0, 0x01, 0x00, 97, 0xF7,
         ])
@@ -69,8 +67,7 @@ struct InternetActionTests {
     @Test func bodyContainsEncoding() {
         var r = FirmataTaskRecorder()
         let b = r.bodyContains("OK")   // auto dst=15
-        guard let rb = b.register else { Issue.record("expected reg"); return }
-        #expect(rb == 15)
+        #expect(b.register == 15)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x18, 15, 0x02, 0x00, 79, 75, 0xF7,
         ])
@@ -103,8 +100,7 @@ struct InternetActionTests {
     @Test func arithRegConstEncoding() {
         var r = FirmataTaskRecorder()
         let sum = r.add(.reg(0), .number(5), into: 3)
-        guard let rd = sum.register else { Issue.record("expected reg"); return }
-        #expect(rd == 3)
+        #expect(sum.register == 3)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x1A,
             0x00, 0x03,                // op=add, dst=3
@@ -131,9 +127,8 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.add(.reg(0), .reg(1))        // -> R15
         let b = r.multiply(.reg(0), .reg(1))   // -> R14
-        guard let ra = a.register, let rb = b.register else { Issue.record("reg"); return }
-        #expect(ra == 15)
-        #expect(rb == 14)
+        #expect(a.register == 15)
+        #expect(b.register == 14)
     }
 
     // MARK: - Float registers / arithmetic / jsonFloat
@@ -141,8 +136,7 @@ struct InternetActionTests {
     @Test func setFloatEncoding() {
         var r = FirmataTaskRecorder()
         let f = r.setFloatRegister(2, to: 1.5)
-        guard let rf = f.register else { Issue.record("expected freg"); return }
-        #expect(rf == 2)
+        #expect(f.register == 2)
         let bits = Float(1.5).bitPattern
         let expected: [UInt8] = [0xF0, 0x7B, 0x7F, 0x1B, 2]
             + encode7BitFirmata(timeBytes(bits)) + [0xF7]
@@ -172,16 +166,14 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.addFloat(.freg(0), .freg(1))       // -> F7
         let b = r.multiplyFloat(.freg(0), .freg(1))  // -> F6
-        guard let ra = a.register, let rb = b.register else { Issue.record("freg"); return }
-        #expect(ra == 7)
-        #expect(rb == 6)
+        #expect(a.register == 7)
+        #expect(b.register == 6)
     }
 
     @Test func jsonFloatEncoding() {
         var r = FirmataTaskRecorder()
         let v = r.jsonFloat("p", into: 1, found: 2)
-        guard let rf = v.register else { Issue.record("expected freg"); return }
-        #expect(rf == 1)
+        #expect(v.register == 1)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x1D, 1, 2,   // fdst=1, found=2
             0x01, 0x00, 112,                // path "p"
@@ -205,8 +197,7 @@ struct InternetActionTests {
     @Test func heapStatsEncoding() {
         var r = FirmataTaskRecorder()
         let (f, l) = r.heapStats(freeInto: 0, largestInto: 1)
-        guard let rf = f.register, let rl = l.register else { Issue.record("reg"); return }
-        #expect(rf == 0 && rl == 1)
+        #expect(f.register == 0 && l.register == 1)
         #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x21, 0, 1, 0xF7])
     }
 
@@ -238,16 +229,12 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.httpGet("http://x")          // status auto -> R15
         let b = r.httpGet("http://x")          // status auto -> R14
-        guard let ra = a.status.register, let rb = b.status.register else {
-            Issue.record("expected status reg"); return
-        }
-        #expect(ra == 15)
-        #expect(rb == 14)
+        #expect(a.status.register == 15)
+        #expect(b.status.register == 14)
         // explicit statusInto still works and is reflected in the handle
         var r2 = FirmataTaskRecorder()
         let c = r2.httpGet("http://x", statusInto: 3)
-        guard let rc = c.status.register else { Issue.record("reg"); return }
-        #expect(rc == 3)
+        #expect(c.status.register == 3)
         #expect(r2.bytes == [
             0xF0, 0x7B, 0x7F, 0x15, 0x00, 3, 0x08, 0x00,
         ] + urlBytes + [0x00, 0x00, 0xF7] + bodyGen0)
@@ -298,7 +285,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")                 // borrowed; generation captured in R0
         let v = r.json.number(h.body, "id", into: 7, found: 8)
-        guard let rv = v.register, rv == 7 else { Issue.record("reg"); return }
+        #expect(v.register == 7)
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x24, 0x00, 0x00, 0xF7] +              // SELECT live, gen R0
             [0xF0, 0x7B, 0x7F, 0x16, 7, 8, 0, 0x02, 0x00, 105, 100, 0xF7]  // JSON_NUM "id" -> R7
@@ -323,13 +310,11 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         r.httpGet("http://x", statusInto: 0)
         let pct = r.jsonNumber("changePercent", scaledBy: 2)   // dst=15, found=14
-        guard let rv = pct.register else { Issue.record("expected reg"); return }
-        #expect(rv == 15)
+        #expect(pct.register == 15)
         r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: 2, high: true) }
         // The next auto-allocated read should be R13 (15 and 14 already taken).
         let nxt = r.bodyContains("x")
-        guard let rn = nxt.register else { Issue.record("expected reg"); return }
-        #expect(rn == 13)
+        #expect(nxt.register == 13)
     }
 
     // MARK: - Parser: HTTP_REPLY -> .httpResponse
