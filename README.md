@@ -223,10 +223,11 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   source automatically (no manual step):
   - `json.number(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
     parses a **quoted** number `"593.2"`). `json.float(body, path)` → `FloatOperand`.
-  - `json.stringEquals(body, path, value)` / `json.stringContains(body, path, sub)`
-    / `json.bodyContains(body, text)` → `BoolOperand`.
+  - `json.bodyContains(body, text)` → `BoolOperand` (whole-body substring).
+  - `json.getString(body, path)` → `StringHandle` — captures a string value (into a slot)
+    for the `board.string` ops: `length`/`equals`/`contains`/`indexOf`/`toInt`.
   - `json.type(body, path)` → a `TaskJSONValueType` raw value — branch before extracting.
-  - `json.size(body, path)` / `json.stringLength(body, path)` size a value; pair
+  - `json.size(body, path)` sizes a value; pair
     with `board.heapStats(freeInto:largestInto:)` to **gate a store on free memory**.
   - `path` is dotted/indexed: `quoteResponse.result[0].regularMarketChangePercent`.
     Inspection walks the **full** body (no parse-size cap).
@@ -350,12 +351,12 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   after a newer request reads as **stale**). `FREE` (`0x25`) releases a slot.
   `LAST_STATUS` (`0x26`) → status of the last inspection op
   (`0` ok, `1` notFound, `2` stale, `3` typeMismatch, `4` tooBig, `5` allocFailed).
-- Compare + raw string: `CMP` (`0x27`) → `R[dst]` = `(A <op> B) ? 1 : 0` (a reusable
-  boolean register, same operands as `IF`). Raw-string ops over the selected body
-  (`board.string`): `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → whole
-  body == string; `STR_INDEXOF` (`0x2A`) → index of substring, or `-1`; `STR_TO_NUM`
-  (`0x2B`) → parse a leading integer (+ a found flag). `board.string.contains` reuses
-  `BODY_CONTAINS` (`0x18`); `length/equals/indexOf/toInt` work on `response.text`.
+- Compare + strings: `CMP` (`0x27`) → `R[dst]` = `(A <op> B) ? 1 : 0` (a reusable boolean
+  register, same operands as `IF`). `JSON_GET_STRING` (`0x2C`) copies a JSON string's content
+  at a path into a snapshot slot (`board.json.getString` → a `StringHandle`); the `board.string`
+  ops then run on it: `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → equals;
+  `STR_INDEXOF` (`0x2A`) → index, or `-1`; `STR_TO_NUM` (`0x2B`) → leading integer (+ found
+  flag); `contains` reuses `BODY_CONTAINS` (`0x18`).
 
 The device replies (only when a host is connected) with the result:
 
@@ -442,7 +443,7 @@ I2C device — e.g. an SSD1306 OLED — from a task) — plus the
 integer arithmetic `add`/`subtract`/`multiply`/`divide`/`modulo(_:_:into:)`,
 float `setFloatRegister(_:to:)` / `addFloat`/`subtractFloat`/`multiplyFloat`/`divideFloat(_:_:into:)`,
 `heapStats(freeInto:largestInto:)`, and the **`board.json`** namespace —
-`number`/`float`/`stringEquals`/`stringContains`/`bodyContains`/`type`/`size`/`stringLength`
+`number`/`float`/`bodyContains`/`getString`/`type`/`size`
 (each taking a `resp.body` handle), plus `snapshot(_:into:)` (in-place) / `free(_:)`, with
 borrowed-handle freshness via `body.isValid()`.
 

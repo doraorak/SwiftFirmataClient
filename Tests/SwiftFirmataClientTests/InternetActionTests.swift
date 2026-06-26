@@ -73,28 +73,6 @@ struct InternetActionTests {
         ])
     }
 
-    @Test func jsonStringEqualsEncoding() {
-        var r = FirmataTaskRecorder()
-        _ = r.jsonStringEquals("s", "hi", into: .boolReg(5))
-        #expect(r.bytes == [
-            0xF0, 0x7B, 0x7F, 0x17, 5,
-            0x01, 0x00, 115,           // path "s"
-            0x02, 0x00, 104, 105,      // value "hi"
-            0xF7,
-        ])
-    }
-
-    @Test func jsonStringContainsEncoding() {
-        var r = FirmataTaskRecorder()
-        _ = r.jsonStringContains("s", "h", into: .boolReg(6))
-        #expect(r.bytes == [
-            0xF0, 0x7B, 0x7F, 0x19, 6,
-            0x01, 0x00, 115,           // path "s"
-            0x01, 0x00, 104,           // substring "h"
-            0xF7,
-        ])
-    }
-
     // MARK: - Arithmetic encoding
 
     @Test func arithRegConstEncoding() {
@@ -181,17 +159,23 @@ struct InternetActionTests {
         ])
     }
 
-    // MARK: - Query ops (jsonType / jsonSize / stringLength / heapStats)
+    // MARK: - Query ops (jsonType / jsonSize / heapStats)
 
     @Test func queryOpEncoding() {
         for (op, build): (UInt8, (inout FirmataTaskRecorder) -> Void) in [
             (0x1E, { _ = $0.jsonType("p", into: .reg(3)) }),
             (0x1F, { _ = $0.jsonSize("p", into: .reg(3)) }),
-            (0x20, { _ = $0.stringLength("p", into: .reg(3)) }),
         ] {
             var r = FirmataTaskRecorder(); build(&r)
             #expect(r.bytes == [0xF0, 0x7B, 0x7F, op, 3, 0x01, 0x00, 112, 0xF7])
         }
+    }
+
+    @Test func getStringEncoding() {
+        var r = FirmataTaskRecorder()
+        let slot = r.jsonGetString("p", into: 0)          // 0x2C slot pathLo pathHi path…
+        #expect(slot == 0)
+        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2C, 0, 0x01, 0x00, 112, 0xF7])
     }
 
     @Test func heapStatsEncoding() {
