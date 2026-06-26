@@ -721,70 +721,162 @@ public struct JSONOps {
 /// and arithmetic — an integer/float register or a literal. (Non-standard extension.)
 /// When either side of a comparison/op is a float, the device promotes to float.
 ///
-/// This is the abstract base; the recorder's ops hand back the concrete kind that
+/// This is the root protocol; the recorder's ops hand back the concrete kind that
 /// matches what they produce — ``NumberOperand``, ``FloatOperand``, or ``BoolOperand`` —
 /// so the static type tells you what a value *is*. Build literals with
-/// ``number(_:)`` / ``float(_:)`` / ``bool(_:)`` (or `NumberOperand(200)` for a
-/// compile-time constant), and name registers explicitly with ``reg(_:)`` / ``freg(_:)``.
-public class TaskOperand: @unchecked Sendable {
+/// ``number(_:)`` / ``float(_:)`` / ``bool(_:)``, and name registers explicitly with
+/// ``reg(_:)`` / ``freg(_:)``.
+public protocol TaskOperand: Sendable {
     /// Wire encoding: `00 reg` | `01 const:5` | `02 freg` | `03 fconst:5`.
-    let operandBytes: [UInt8]
-    required init(operandBytes: [UInt8]) { self.operandBytes = operandBytes }
+    var operandBytes: [UInt8] { get }
+}
 
-    /// The register index this operand names (int or float), or `nil` for a literal.
-    var register: UInt8? {
-        guard operandBytes.count == 2, operandBytes[0] == 0 || operandBytes[0] == 2 else { return nil }
-        return operandBytes[1]
+public protocol TaskRegisterOperand: TaskOperand {
+    var register: UInt8 { get }
+}
+
+public protocol TaskLiteralOperand: TaskOperand {
+}
+
+extension TaskOperand {
+    public var register: UInt8? {
+        guard let registerOperand = self as? TaskRegisterOperand else { return nil }
+        // `as UInt8` pins lookup to TaskRegisterOperand's non-optional `register`;
+        // without it the expression resolves back to this optional property and recurses.
+        return registerOperand.register as UInt8
     }
+}
 
-    // MARK: Literals
+public extension TaskOperand where Self == NumberLiteralOperand {
     /// A fixed signed 32-bit integer literal.
-    public static func number(_ value: Int32) -> NumberOperand {
-        NumberOperand(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: value))))
+    static func number(_ value: Self.RawValue) -> Self {
+        .init(rawValue: value)
     }
-    /// A fixed `Float` literal.
-    public static func float(_ value: Float) -> FloatOperand {
-        FloatOperand(operandBytes: [3] + encode7BitFirmata(timeBytes(value.bitPattern)))
-    }
-    /// A fixed boolean literal (`1`/`0`, compared as an integer).
-    public static func bool(_ value: Bool) -> BoolOperand {
-        BoolOperand(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(value ? 1 : 0))))
-    }
-
-    // MARK: Registers (explicit / advanced)
+}
+public extension TaskOperand where Self == NumberRegisterOperand {
     /// One of the device's 16 integer registers, by index (`0`–`15`).
-    public static func reg(_ r: UInt8) -> NumberOperand { NumberOperand(operandBytes: [0, r & 0x0F]) }
+    static func reg(_ r: UInt8) -> Self {
+        .init(register: r)
+    }
+}
+
+public extension TaskOperand where Self == FloatLiteralOperand {
+    /// A fixed `Float` literal.
+    static func float(_ value: Self.RawValue) -> Self {
+        .init(rawValue: value)
+    }
+}
+public extension TaskOperand where Self == FloatRegisterOperand {
     /// One of the device's 8 float registers, by index (`0`–`7`).
-    public static func freg(_ r: UInt8) -> FloatOperand { FloatOperand(operandBytes: [2, r & 0x07]) }
+    static func freg(_ r: UInt8) -> Self {
+        .init(register: r)
+    }
+}
+
+public extension TaskOperand where Self == BoolLiteralOperand {
+    /// A fixed boolean literal (`1`/`0`, compared as an integer).
+    static func bool(_ value: Self.RawValue) -> Self {
+        .init(rawValue: value)
+    }
+}
+public extension TaskOperand where Self == BoolRegisterOperand {
     /// An integer register reinterpreted as a boolean (`0`/non-zero) result.
-    static func boolReg(_ r: UInt8) -> BoolOperand { BoolOperand(operandBytes: [0, r & 0x0F]) }
+    static func boolReg(_ r: UInt8) -> Self {
+        .init(register: r)
+    }
 }
 
-/// An integer-valued operand — a register or a literal. Make a compile-time
-/// constant with `NumberOperand(200)` or ``TaskOperand/number(_:)``.
-public final class NumberOperand: TaskOperand, @unchecked Sendable {
+/// An integer-valued operand — either ``NumberLiteralOperand`` or ``NumberRegisterOperand``.
+public protocol NumberOperand: TaskOperand {
+}
+
+/// An integer-valued literal operand. Make a compile-time constant with
+/// ``TaskOperand/number(_:)`` or `NumberLiteralOperand(rawValue: 200)`.
+public struct NumberLiteralOperand: RawRepresentable, TaskLiteralOperand, NumberOperand {
+    public var rawValue: Int32
+
     /// A compile-time signed 32-bit constant.
-    public convenience init(_ value: Int32) {
-        self.init(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: value))))
+    public init(rawValue: Int32) {
+        self.rawValue = rawValue
+    }
+
+    public var operandBytes: [UInt8] {
+        [1] + encode7BitFirmata(timeBytes(UInt32(bitPattern: rawValue)))
     }
 }
 
-/// A floating-point operand — a float register or a literal. Make a compile-time
-/// constant with `FloatOperand(1.5)` or ``TaskOperand/float(_:)``.
-public final class FloatOperand: TaskOperand, @unchecked Sendable {
+public struct NumberRegisterOperand: TaskRegisterOperand, NumberOperand {
+    public var register: UInt8
+
+    public init(register: UInt8) {
+        self.register = register
+    }
+
+    public var operandBytes: [UInt8] {
+        [0, register & 0x0F]
+    }
+}
+
+/// A floating-point operand — either ``FloatLiteralOperand`` or ``FloatRegisterOperand``.
+public protocol FloatOperand: TaskOperand {
+}
+
+/// A floating-point literal operand. Make a compile-time constant with
+/// ``TaskOperand/float(_:)`` or `FloatLiteralOperand(rawValue: 1.5)`.
+public struct FloatLiteralOperand: RawRepresentable, TaskLiteralOperand, FloatOperand {
+    public var rawValue: Float
+
     /// A compile-time `Float` constant.
-    public convenience init(_ value: Float) {
-        self.init(operandBytes: [3] + encode7BitFirmata(timeBytes(value.bitPattern)))
+    public init(rawValue: Float) {
+        self.rawValue = rawValue
+    }
+
+    public var operandBytes: [UInt8] {
+        [3] + encode7BitFirmata(timeBytes(rawValue.bitPattern))
     }
 }
 
-/// A boolean-valued operand — produced by the predicate ops (``FirmataTaskRecorder``'s
-/// `json.stringEquals`, `bodyContains`, `digitalRead(pin:)`, …) and consumable directly
-/// by `ifTrue`. Backed by a `0`/`1` integer register or a literal.
-public final class BoolOperand: TaskOperand, @unchecked Sendable {
+public struct FloatRegisterOperand: TaskRegisterOperand, FloatOperand {
+    public var register: UInt8
+
+    public init(register: UInt8) {
+        self.register = register
+    }
+
+    public var operandBytes: [UInt8] {
+        [2, register & 0x07]
+    }
+}
+
+/// A boolean-valued operand — either ``BoolLiteralOperand`` or ``BoolRegisterOperand``.
+/// Produced by the predicate ops (``FirmataTaskRecorder``'s `json.stringEquals`,
+/// `bodyContains`, `digitalRead(pin:)`, …) and consumable directly by `ifTrue`.
+public protocol BoolOperand: TaskOperand {
+}
+
+/// A boolean literal operand, backed by a `0`/`1` integer compared as an integer.
+public struct BoolLiteralOperand: RawRepresentable, TaskLiteralOperand, BoolOperand {
+    public var rawValue: Bool
+
     /// A compile-time boolean constant.
-    public convenience init(_ value: Bool) {
-        self.init(operandBytes: [1] + encode7BitFirmata(timeBytes(UInt32(value ? 1 : 0))))
+    public init(rawValue: Bool) {
+        self.rawValue = rawValue
+    }
+
+    public var operandBytes: [UInt8] {
+        [1] + encode7BitFirmata(timeBytes(UInt32(rawValue ? 1 : 0)))
+    }
+}
+
+public struct BoolRegisterOperand: TaskRegisterOperand, BoolOperand {
+    public var register: UInt8
+
+    public init(register: UInt8) {
+        self.register = register
+    }
+
+    public var operandBytes: [UInt8] {
+        [0, register & 0x0F]
     }
 }
 
@@ -796,9 +888,9 @@ public final class BoolOperand: TaskOperand, @unchecked Sendable {
 /// generation captured when the request was recorded (a later request makes it stale —
 /// test it with ``isValid()``). ``JSONOps/snapshot(_:into:)`` upgrades a handle **in place**
 /// to an *owned* one that pins a persisted copy in a slot (so it survives later requests).
-/// It's modelled as a ``TaskOperand`` for naming symmetry with the value operands,
-/// but it carries a source reference rather than a comparable value.
-public final class JSONOperand: TaskOperand, @unchecked Sendable {
+/// Unlike the value operands it carries a source reference rather than a comparable value,
+/// so it is a standalone handle rather than a ``TaskOperand``.
+public final class JSONOperand: @unchecked Sendable {
     /// Register holding the body generation captured at request time (borrowed handle).
     let genReg: UInt8?
     /// Snapshot slot, once this handle has been snapshotted into an owned, persisted copy.
@@ -808,11 +900,6 @@ public final class JSONOperand: TaskOperand, @unchecked Sendable {
 
     init(genReg: UInt8?, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
         self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
-        super.init(operandBytes: [])
-    }
-    required init(operandBytes: [UInt8]) {
-        self.genReg = nil; self.snapshotSlot = nil; self.rec = nil
-        super.init(operandBytes: operandBytes)
     }
 
     /// Record a boolean that is `true` while the captured live body is still the current
