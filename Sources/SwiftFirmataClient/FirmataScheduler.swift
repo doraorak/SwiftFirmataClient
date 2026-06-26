@@ -196,7 +196,7 @@ public final class FirmataTaskRecorder {
     /// a later auto-read may reuse the same register.
     /// - Parameter pin: The board pin to read (put it in `.input`/`.inputPullup` first).
     /// - Returns: The register operand holding `0`/`1`.
-    public func digitalRead(pin: UInt8) -> BoolOperand {
+    public func digitalRead(pin: UInt8) -> BoolRegisterOperand {
         let r = allocateRegister(); digitalRead(into: r, pin: pin); return .boolReg(r)
     }
 
@@ -206,7 +206,7 @@ public final class FirmataTaskRecorder {
     /// rules; use ``analogRead(into:channel:)`` to choose the register yourself.
     /// - Parameter channel: Analog channel index (`A0 = 0`, …), **not** a pin number.
     /// - Returns: The register operand holding the reading.
-    public func analogRead(channel: UInt8) -> NumberOperand {
+    public func analogRead(channel: UInt8) -> NumberRegisterOperand {
         let r = allocateRegister(); analogRead(into: r, channel: channel); return .reg(r)
     }
 
@@ -321,7 +321,7 @@ public final class FirmataTaskRecorder {
     /// ```
     @discardableResult
     public func compare(_ a: TaskOperand, _ op: TaskComparison, _ b: TaskOperand,
-                        into: UInt8? = nil) -> BoolOperand {
+                        into: UInt8? = nil) -> BoolRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extCmp,
                           op.rawValue, dst & 0x0F]
@@ -422,7 +422,7 @@ public final class FirmataTaskRecorder {
 
     /// Read the device's current request count (body generation) into a register.
     /// Used by ``JSONOperand/isValid()`` to compare against a handle's captured generation.
-    func currentRequestCount(into: UInt8? = nil) -> NumberOperand {
+    func currentRequestCount(into: UInt8? = nil) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst & 0x0F, Cmd.endSysEx]
         return .reg(dst & 0x0F)
@@ -444,7 +444,7 @@ public final class FirmataTaskRecorder {
     /// - Returns: The value register operand.
     @discardableResult
     func jsonNumber(_ path: String, scaledBy: UInt8 = 0,
-                                    into: UInt8? = nil, found: UInt8? = nil) -> NumberOperand {
+                                    into: UInt8? = nil, found: UInt8? = nil) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         let fnd = found ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonNum,
@@ -457,7 +457,7 @@ public final class FirmataTaskRecorder {
     /// Record testing whether the whole last response body **contains** `text`
     /// (raw substring). Returns the `0/1` result register.
     @discardableResult
-    func bodyContains(_ text: String, into: UInt8? = nil) -> BoolOperand {
+    func bodyContains(_ text: String, into: UInt8? = nil) -> BoolRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst & 0x0F]
         appendLengthPrefixed(&m, text)
@@ -468,18 +468,18 @@ public final class FirmataTaskRecorder {
     /// Record testing whether the **JSON string** at `path` equals `value`.
     /// Returns the `0/1` result register.
     @discardableResult
-    func jsonStringEquals(_ path: String, _ value: String, into: UInt8? = nil) -> BoolOperand {
+    func jsonStringEquals(_ path: String, _ value: String, into: UInt8? = nil) -> BoolRegisterOperand {
         return jsonStrOp(Sched.extJsonStrEq, path, value, into)
     }
 
     /// Record testing whether the **JSON string** at `path` contains `substring`.
     /// Returns the `0/1` result register.
     @discardableResult
-    func jsonStringContains(_ path: String, _ substring: String, into: UInt8? = nil) -> BoolOperand {
+    func jsonStringContains(_ path: String, _ substring: String, into: UInt8? = nil) -> BoolRegisterOperand {
         return jsonStrOp(Sched.extJsonStrContains, path, substring, into)
     }
 
-    private func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: UInt8?) -> BoolOperand {
+    private func jsonStrOp(_ op: UInt8, _ path: String, _ s: String, _ into: UInt8?) -> BoolRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst & 0x0F]
         appendLengthPrefixed(&m, path)
@@ -501,32 +501,32 @@ public final class FirmataTaskRecorder {
     /// operand for chaining / `ifTrue`. (64-bit intermediates on the device avoid
     /// overflow; `÷` and `%` by zero yield 0.)
     @discardableResult
-    public func add(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+    public func add(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberRegisterOperand {
         arith(0, a, b, into)
     }
     /// Record `R[dst] = a - b`. See ``add(_:_:into:)``.
     @discardableResult
-    public func subtract(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+    public func subtract(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberRegisterOperand {
         arith(1, a, b, into)
     }
     /// Record `R[dst] = a * b`. See ``add(_:_:into:)``.
     @discardableResult
-    public func multiply(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+    public func multiply(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberRegisterOperand {
         arith(2, a, b, into)
     }
     /// Record `R[dst] = a / b` (integer division; `÷0` → 0). See ``add(_:_:into:)``.
     @discardableResult
-    public func divide(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+    public func divide(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberRegisterOperand {
         arith(3, a, b, into)
     }
     /// Record `R[dst] = a % b` (`%0` → 0). See ``add(_:_:into:)``.
     @discardableResult
-    public func modulo(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberOperand {
+    public func modulo(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> NumberRegisterOperand {
         arith(4, a, b, into)
     }
 
     private func arith(_ sub: UInt8, _ a: TaskOperand, _ b: TaskOperand,
-                                _ into: UInt8?) -> NumberOperand {
+                                _ into: UInt8?) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extArith, sub, dst & 0x0F]
         m += a.operandBytes
@@ -539,7 +539,7 @@ public final class FirmataTaskRecorder {
 
     /// Record `F[dst] = value`. Returns the float register as a `.freg` operand.
     @discardableResult
-    public func setFloatRegister(_ dst: UInt8, to value: Float) -> FloatOperand {
+    public func setFloatRegister(_ dst: UInt8, to value: Float) -> FloatRegisterOperand {
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSetFloat, dst & 0x07]
         m += encode7BitFirmata(timeBytes(value.bitPattern))
         m.append(Cmd.endSysEx); bytes += m
@@ -550,7 +550,7 @@ public final class FirmataTaskRecorder {
     /// float register (handles unquoted `593.2`, quoted `"593.2"`, and exponents).
     /// Returns the float register operand; `found` (int reg) is `1`/`0`.
     @discardableResult
-    func jsonFloat(_ path: String, into: UInt8? = nil, found: UInt8? = nil) -> FloatOperand {
+    func jsonFloat(_ path: String, into: UInt8? = nil, found: UInt8? = nil) -> FloatRegisterOperand {
         let dst = into ?? allocateFloatRegister()
         let fnd = found ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonFloat,
@@ -564,27 +564,27 @@ public final class FirmataTaskRecorder {
     /// literals (ints promote to float). Result float register auto-allocated
     /// (F7↓) unless `into:` is given. `÷0` → 0.
     @discardableResult
-    public func addFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+    public func addFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatRegisterOperand {
         arithF(0, a, b, into)
     }
     /// Record `F[dst] = a - b` (float). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func subtractFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+    public func subtractFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatRegisterOperand {
         arithF(1, a, b, into)
     }
     /// Record `F[dst] = a * b` (float). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func multiplyFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+    public func multiplyFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatRegisterOperand {
         arithF(2, a, b, into)
     }
     /// Record `F[dst] = a / b` (float; `÷0` → 0). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func divideFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatOperand {
+    public func divideFloat(_ a: TaskOperand, _ b: TaskOperand, into: UInt8? = nil) -> FloatRegisterOperand {
         arithF(3, a, b, into)
     }
 
     private func arithF(_ sub: UInt8, _ a: TaskOperand, _ b: TaskOperand,
-                                 _ into: UInt8?) -> FloatOperand {
+                                 _ into: UInt8?) -> FloatRegisterOperand {
         let dst = into ?? allocateFloatRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extArithFloat, sub, dst & 0x07]
         m += a.operandBytes
@@ -598,22 +598,22 @@ public final class FirmataTaskRecorder {
     /// Record `R[dst]` = the ``TaskJSONValueType`` of the value at `path` (its raw value).
     /// Branch with `ifTrue(t, .equal, .number(TaskJSONValueType.number.rawValue))`.
     @discardableResult
-    func jsonType(_ path: String, into: UInt8? = nil) -> NumberOperand {
+    func jsonType(_ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         queryOp(Sched.extJsonType, path, into)
     }
     /// Record `R[dst]` = byte length of the value's span at `path` (`0` if missing) —
     /// size a snapshot before storing it.
     @discardableResult
-    func jsonSize(_ path: String, into: UInt8? = nil) -> NumberOperand {
+    func jsonSize(_ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         queryOp(Sched.extJsonSize, path, into)
     }
     /// Record `R[dst]` = content length of the JSON string at `path` (`0` if not a string).
     @discardableResult
-    func stringLength(_ path: String, into: UInt8? = nil) -> NumberOperand {
+    func stringLength(_ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         queryOp(Sched.extStrLen, path, into)
     }
 
-    private func queryOp(_ op: UInt8, _ path: String, _ into: UInt8?) -> NumberOperand {
+    private func queryOp(_ op: UInt8, _ path: String, _ into: UInt8?) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst & 0x0F]
         appendLengthPrefixed(&m, path)
@@ -625,7 +625,7 @@ public final class FirmataTaskRecorder {
     /// contiguous block — so a task can gate an allocation on available memory.
     @discardableResult
     public func heapStats(freeInto: UInt8? = nil,
-                                   largestInto: UInt8? = nil) -> (free: NumberOperand, largest: NumberOperand) {
+                                   largestInto: UInt8? = nil) -> (free: NumberRegisterOperand, largest: NumberRegisterOperand) {
         let f = freeInto ?? allocateRegister()
         let l = largestInto ?? allocateRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extHeap,
@@ -669,45 +669,45 @@ public struct JSONOps {
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
     public func number(_ body: JSONOperand, _ path: String, scaledBy: UInt8 = 0,
-                       into: UInt8? = nil, found: UInt8? = nil) -> NumberOperand {
+                       into: UInt8? = nil, found: UInt8? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonNumber(path, scaledBy: scaledBy, into: into, found: found)
     }
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
     public func float(_ body: JSONOperand, _ path: String,
-                      into: UInt8? = nil, found: UInt8? = nil) -> FloatOperand {
+                      into: UInt8? = nil, found: UInt8? = nil) -> FloatRegisterOperand {
         rec.select(body); return rec.jsonFloat(path, into: into, found: found)
     }
     /// `R` = (JSON string at `path` == `value`) ? 1 : 0.
     @discardableResult
     public func stringEquals(_ body: JSONOperand, _ path: String, _ value: String,
-                             into: UInt8? = nil) -> BoolOperand {
+                             into: UInt8? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.jsonStringEquals(path, value, into: into)
     }
     /// `R` = (JSON string at `path` contains `substring`) ? 1 : 0.
     @discardableResult
     public func stringContains(_ body: JSONOperand, _ path: String, _ substring: String,
-                               into: UInt8? = nil) -> BoolOperand {
+                               into: UInt8? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.jsonStringContains(path, substring, into: into)
     }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
-    public func bodyContains(_ body: JSONOperand, _ text: String, into: UInt8? = nil) -> BoolOperand {
+    public func bodyContains(_ body: JSONOperand, _ text: String, into: UInt8? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.bodyContains(text, into: into)
     }
     /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
     @discardableResult
-    public func type(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+    public func type(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonType(path, into: into)
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
-    public func size(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+    public func size(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonSize(path, into: into)
     }
     /// `R` = content length of the JSON string at `path`.
     @discardableResult
-    public func stringLength(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberOperand {
+    public func stringLength(_ body: JSONOperand, _ path: String, into: UInt8? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.stringLength(path, into: into)
     }
     /// Persist the body into a slot that survives the next request, **upgrading `body` in
@@ -920,7 +920,7 @@ public final class JSONOperand: @unchecked Sendable {
 /// ``body`` with the `board.json` ops.
 public struct TaskHTTPResponse: Sendable {
     /// Operand for the register holding the HTTP status code (`0` on failure).
-    public let status: NumberOperand
+    public let status: NumberRegisterOperand
     /// Handle to the response body for the `board.json` inspection ops.
     public let body: JSONOperand
 }
