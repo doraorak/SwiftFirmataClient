@@ -554,6 +554,31 @@ try await client.uploadTask(id: 6) { board in
 //   .missing 0  .object 1  .array 2  .string 3  .number 4  .bool 5  .null 6
 ```
 
+### Raw strings — `board.string`
+
+When the body isn't JSON (or you just want the **whole** body as text), inspect it with
+`board.string.*` over `response.text` — a `StringHandle`, the raw-text sibling of `body`:
+
+```swift
+try await client.uploadTask(id: 7) { board in
+    let r = board.httpGet("https://example.com/status")   // body e.g. "42 ready"
+    let s = r.text                                        // StringHandle
+
+    let len  = board.string.length(s)                     // -> NumberOperand (byte length)
+    let ok   = board.string.contains(s, "ready")          // -> BoolOperand
+    let same = board.string.equals(s, "42 ready")         // -> BoolOperand (whole body ==)
+    let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
+    let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
+
+    board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
+    _ = (len, same, at, n)
+}
+```
+
+Backed by firmware ext-ops `0x28`–`0x2B` (`contains` reuses `bodyContains` `0x18`).
+`board.string.snapshot(_:)` / `free(_:)` behave exactly as on `body` (§19) — both share
+the same on-device selection machinery, so a `StringHandle` can be snapshotted too.
+
 ---
 
 ## 19. Snapshots & staleness
