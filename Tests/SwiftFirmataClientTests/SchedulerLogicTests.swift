@@ -9,15 +9,15 @@ struct SchedulerLogicTests {
 
     @Test func setRegisterEncoding() {
         var r = FirmataTaskRecorder()
-        r.setRegister(3, to: 512)
+        r.setRegister(.reg(3), to: 512)
         // F0 7B 7F 10 reg=3 <512 as Encoder7Bit of [0,2,0,0] = 0,4,0,0,0> F7
         #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x10, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0xF7])
     }
 
     @Test func readDigitalAndAnalogEncoding() {
         var r = FirmataTaskRecorder()
-        r.digitalRead(into: 1, pin: 7)
-        r.analogRead(into: 2, channel: 0)
+        r.digitalRead(into: .boolReg(1), pin: 7)
+        r.analogRead(into: .reg(2), channel: 0)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x11, 0x01, 0x07, 0xF7,   // R1 = digitalRead(7)
             0xF0, 0x7B, 0x7F, 0x12, 0x02, 0x00, 0xF7,   // R2 = analogRead(A0)
@@ -61,7 +61,7 @@ struct SchedulerLogicTests {
 
     @Test func compareEncodesOpDstThenOperands() {
         var r = FirmataTaskRecorder()
-        let isUp = r.compare(.reg(0), .greaterThan, .number(0), into: 5)
+        let isUp = r.compare(.reg(0), .greaterThan, .number(0), into: .boolReg(5))
         // EXT CMP (0x27) op=greaterThan(3) dst=R5, a=reg0, b=const0
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x27, 0x03, 0x05,   // CMP op=greaterThan dst=R5

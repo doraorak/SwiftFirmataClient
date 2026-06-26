@@ -447,7 +447,7 @@ public actor FirmataClient {
     /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
     public func httpGet(_ url: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
         try await sendHttpAndAwait(
-            httpOpBytes(method: 0, statusReg: 15, url: url, body: nil), timeout: timeout)
+            httpOpBytes(method: 0, statusReg: .reg(15), url: url, body: nil), timeout: timeout)
     }
 
     /// Have the device perform an HTTP(S) `POST` (`Content-Type: application/json`)
@@ -459,7 +459,7 @@ public actor FirmataClient {
     /// - Throws: ``FirmataError/noResponse`` on timeout, or a transport error.
     public func httpPost(_ url: String, body: String, timeout: Duration = .seconds(15)) async throws -> HTTPResponse {
         try await sendHttpAndAwait(
-            httpOpBytes(method: 1, statusReg: 15, url: url, body: body), timeout: timeout)
+            httpOpBytes(method: 1, statusReg: .reg(15), url: url, body: body), timeout: timeout)
     }
 
     private func sendHttpAndAwait(_ bytes: [UInt8], timeout: Duration) async throws -> HTTPResponse {
