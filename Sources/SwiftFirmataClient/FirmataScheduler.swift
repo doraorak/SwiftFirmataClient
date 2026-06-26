@@ -390,16 +390,17 @@ public final class FirmataTaskRecorder {
         let gReg = allocateGenRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, gReg.register & 0x0F, Cmd.endSysEx]
         return TaskHTTPResponse(status: statusReg,
-                                body: JSONOperand(genReg: gReg, snapshotSlot: nil, rec: self))
+                                body: JSONHandle(genReg: gReg, snapshotSlot: nil, rec: self),
+                                text: StringHandle(genReg: gReg, snapshotSlot: nil, rec: self))
     }
 
     // MARK: Body handles — snapshot / select / free
 
     /// Persist the **whole current body** into a snapshot slot so it survives the next
-    /// request, **upgrading `body` in place** to an owned handle (its ``JSONOperand/snapshotSlot``
+    /// request, **upgrading `body` in place** to an owned handle (its ``JSONHandle/snapshotSlot``
     /// is set). Slot auto-allocated (0–1) unless given. Call right after the `httpGet` whose
     /// body you want to keep; subsequent `board.json` ops on the same handle read the snapshot.
-    func snapshot(_ body: JSONOperand, into slot: UInt8? = nil) {
+    func snapshot(_ body: some ResponseBodyHandle, into slot: UInt8? = nil) {
         let s = slot ?? allocateSnapshotSlot()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
                   s & 0x01, 0x00, 0x00, Cmd.endSysEx]      // pathLen 0 = whole body
@@ -408,8 +409,8 @@ public final class FirmataTaskRecorder {
 
     /// Choose which body the following inspection ops read: a snapshot (owned), or the
     /// live body checked against this handle's generation (a borrowed handle used after a
-    /// newer request reads as **stale** — test it with ``JSONOperand/isValid()``).
-    func select(_ body: JSONOperand) {
+    /// newer request reads as **stale** — test it with ``JSONHandle/isValid()``).
+    func select(_ body: some ResponseBodyHandle) {
         if let slot = body.snapshotSlot {
             bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
                       (slot & 0x01) + 1, 0x00, Cmd.endSysEx]
@@ -420,13 +421,13 @@ public final class FirmataTaskRecorder {
     }
 
     /// Free a snapshot slot held by an owned body handle.
-    func free(_ body: JSONOperand) {
+    func free(_ body: some ResponseBodyHandle) {
         guard let slot = body.snapshotSlot else { return }
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot & 0x01, Cmd.endSysEx]
     }
 
     /// Read the device's current request count (body generation) into a register.
-    /// Used by ``JSONOperand/isValid()`` to compare against a handle's captured generation.
+    /// Used by ``JSONHandle/isValid()`` to compare against a handle's captured generation.
     func currentRequestCount(into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst.register & 0x0F, Cmd.endSysEx]
@@ -490,6 +491,37 @@ public final class FirmataTaskRecorder {
         appendLengthPrefixed(&m, path)
         appendLengthPrefixed(&m, s)
         m.append(Cmd.endSysEx); bytes += m
+        return dst
+    }
+
+    // MARK: Raw-string ops over the selected body (board.string)
+
+    @discardableResult
+    func strBodyLength(into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        let dst = into ?? allocateRegister()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrBodyLen, dst.register & 0x0F, Cmd.endSysEx]
+        return dst
+    }
+    @discardableResult
+    func strEquals(_ value: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
+        let dst = into ?? BoolRegisterOperand(allocateRegister())
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrEquals, dst.register & 0x0F]
+        appendLengthPrefixed(&m, value); m.append(Cmd.endSysEx); bytes += m
+        return dst
+    }
+    @discardableResult
+    func strIndexOf(_ sub: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        let dst = into ?? allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrIndexOf, dst.register & 0x0F]
+        appendLengthPrefixed(&m, sub); m.append(Cmd.endSysEx); bytes += m
+        return dst
+    }
+    @discardableResult
+    func strToNum(into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        let dst = into ?? allocateRegister()
+        let fnd = found ?? allocateRegister()
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrToNum,
+                  dst.register & 0x0F, fnd.register & 0x0F, Cmd.endSysEx]
         return dst
     }
 
@@ -660,66 +692,107 @@ public final class FirmataTaskRecorder {
     /// `board.json.number(resp.body, "path")`. (A tiny value-type view over the recorder;
     /// no instance to manage.)
     public var json: JSONOps { JSONOps(rec: self) }
+
+    /// Raw-string inspection of a recorded response body — `board.string` ops over a
+    /// ``StringHandle`` (e.g. ``TaskHTTPResponse/text``).
+    public var string: StringOps { StringOps(rec: self) }
 }
 
 /// JSON inspection of a recorded response body (reached via ``FirmataTaskRecorder/json``).
-/// Each call takes a ``JSONOperand`` body handle (from ``TaskHTTPResponse/body`` or
+/// Each call takes a ``JSONHandle`` body handle (from ``TaskHTTPResponse/body`` or
 /// ``snapshot(_:into:)``): it selects that source on the device — a snapshot, or the live
 /// body checked for staleness against the handle's generation — then records the op. Branch
 /// on results with `board.ifTrue`, and guard a borrowed handle's freshness with
-/// ``JSONOperand/isValid()``.
+/// ``JSONHandle/isValid()``.
 public struct JSONOps {
     let rec: FirmataTaskRecorder
 
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
-    public func number(_ body: JSONOperand, _ path: String, scaledBy: UInt8 = 0,
+    public func number(_ body: JSONHandle, _ path: String, scaledBy: UInt8 = 0,
                        into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonNumber(path, scaledBy: scaledBy, into: into, found: found)
     }
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
-    public func float(_ body: JSONOperand, _ path: String,
+    public func float(_ body: JSONHandle, _ path: String,
                       into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
         rec.select(body); return rec.jsonFloat(path, into: into, found: found)
     }
     /// `R` = (JSON string at `path` == `value`) ? 1 : 0.
     @discardableResult
-    public func stringEquals(_ body: JSONOperand, _ path: String, _ value: String,
+    public func stringEquals(_ body: JSONHandle, _ path: String, _ value: String,
                              into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.jsonStringEquals(path, value, into: into)
     }
     /// `R` = (JSON string at `path` contains `substring`) ? 1 : 0.
     @discardableResult
-    public func stringContains(_ body: JSONOperand, _ path: String, _ substring: String,
+    public func stringContains(_ body: JSONHandle, _ path: String, _ substring: String,
                                into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.jsonStringContains(path, substring, into: into)
     }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
-    public func bodyContains(_ body: JSONOperand, _ text: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
+    public func bodyContains(_ body: JSONHandle, _ text: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
         rec.select(body); return rec.bodyContains(text, into: into)
     }
     /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
     @discardableResult
-    public func type(_ body: JSONOperand, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+    public func type(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonType(path, into: into)
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
-    public func size(_ body: JSONOperand, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+    public func size(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonSize(path, into: into)
     }
     /// `R` = content length of the JSON string at `path`.
     @discardableResult
-    public func stringLength(_ body: JSONOperand, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+    public func stringLength(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.stringLength(path, into: into)
     }
     /// Persist the body into a slot that survives the next request, **upgrading `body` in
     /// place** to an owned handle — call right after the `httpGet` you want to keep.
-    public func snapshot(_ body: JSONOperand, into slot: UInt8? = nil) { rec.snapshot(body, into: slot) }
+    public func snapshot(_ body: JSONHandle, into slot: UInt8? = nil) { rec.snapshot(body, into: slot) }
     /// Free a snapshot slot held by an owned body handle.
-    public func free(_ body: JSONOperand) { rec.free(body) }
+    public func free(_ body: JSONHandle) { rec.free(body) }
+}
+
+/// Raw-string inspection of a recorded response body (reached via ``FirmataTaskRecorder/string``).
+/// Each call takes a ``StringHandle`` (from ``TaskHTTPResponse/text`` or ``snapshot(_:into:)``):
+/// it selects that source on the device, then records the op. Branch on results with `board.ifTrue`.
+public struct StringOps {
+    let rec: FirmataTaskRecorder
+
+    /// `R` = byte length of the whole string.
+    @discardableResult
+    public func length(_ s: StringHandle, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        rec.select(s); return rec.strBodyLength(into: into)
+    }
+    /// `R` = (string == `value`) ? 1 : 0.
+    @discardableResult
+    public func equals(_ s: StringHandle, _ value: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
+        rec.select(s); return rec.strEquals(value, into: into)
+    }
+    /// `R` = (string contains `substring`) ? 1 : 0.
+    @discardableResult
+    public func contains(_ s: StringHandle, _ substring: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
+        rec.select(s); return rec.bodyContains(substring, into: into)
+    }
+    /// `R` = index of `substring` in the string, or `-1` if absent.
+    @discardableResult
+    public func indexOf(_ s: StringHandle, _ substring: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        rec.select(s); return rec.strIndexOf(substring, into: into)
+    }
+    /// `R` = the string parsed as an integer (leading sign + digits); `R[found]` = 0/1.
+    @discardableResult
+    public func toInt(_ s: StringHandle, into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        rec.select(s); return rec.strToNum(into: into, found: found)
+    }
+    /// Persist the body into a slot that survives the next request, upgrading `s` in place.
+    public func snapshot(_ s: StringHandle, into slot: UInt8? = nil) { rec.snapshot(s, into: slot) }
+    /// Free a snapshot slot held by an owned handle.
+    public func free(_ s: StringHandle) { rec.free(s) }
 }
 
 /// A typed value the device evaluates in ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``
@@ -903,7 +976,15 @@ public extension BoolRegisterOperand {
 /// to an *owned* one that pins a persisted copy in a slot (so it survives later requests).
 /// Unlike the value operands it carries a source reference rather than a comparable value,
 /// so it is a standalone handle rather than a ``TaskOperand``.
-public final class JSONOperand: @unchecked Sendable {
+/// Shared device-body handle — a JSON view (``JSONHandle``) or raw-string view
+/// (``StringHandle``) of a recorded response body. The select/snapshot/free machinery
+/// works on either.
+protocol ResponseBodyHandle: AnyObject {
+    var genReg: NumberRegisterOperand { get }
+    var snapshotSlot: UInt8? { get set }
+}
+
+public final class JSONHandle: @unchecked Sendable, ResponseBodyHandle {
     /// Register holding the body generation captured at request time (borrowed handle).
     let genReg: NumberRegisterOperand
     /// Snapshot slot, once this handle has been snapshotted into an owned, persisted copy.
@@ -918,8 +999,27 @@ public final class JSONOperand: @unchecked Sendable {
     /// Record a boolean that is `true` while the captured live body is still the current
     /// one, and branch on it with ``FirmataTaskRecorder/ifTrue(_:then:elseDo:)``. After a
     /// newer request replaces the live body this reads `false`; an **owned** snapshot is
-    /// pinned, so it is always valid. (Emits a request-count read + a compare against the
-    /// captured generation — see ``FirmataTaskRecorder/compare(_:_:_:into:)``.)
+    /// pinned, so it is always valid.
+    @discardableResult
+    public func isValid() -> BoolOperand {
+        guard snapshotSlot == nil, let rec else { return .bool(true) }
+        return rec.compare(genReg, .equal, rec.currentRequestCount())
+    }
+}
+
+/// A raw-string view of a recorded response body — from ``TaskHTTPResponse/text`` or a
+/// snapshot — inspected with the `board.string` ops. Structurally a body handle like
+/// ``JSONHandle``; the two differ only in which device ops they feed.
+public final class StringHandle: @unchecked Sendable, ResponseBodyHandle {
+    let genReg: NumberRegisterOperand
+    var snapshotSlot: UInt8?
+    weak var rec: FirmataTaskRecorder?
+
+    init(genReg: NumberRegisterOperand, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
+        self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
+    }
+
+    /// `true` while the captured live body is still current (an owned snapshot is always valid).
     @discardableResult
     public func isValid() -> BoolOperand {
         guard snapshotSlot == nil, let rec else { return .bool(true) }
@@ -929,18 +1029,20 @@ public final class JSONOperand: @unchecked Sendable {
 
 /// A handle to an internet request recorded in a task — returned by
 /// ``FirmataTaskRecorder/httpGet(_:statusInto:)`` / ``httpPost(_:body:statusInto:)``.
-/// Branch on ``status`` (the HTTP status register); inspect the payload through
-/// ``body`` with the `board.json` ops.
+/// Branch on ``status``; inspect the payload as JSON via ``body`` (`board.json`) or as
+/// raw text via ``text`` (`board.string`).
 public struct TaskHTTPResponse: Sendable {
     /// Operand for the register holding the HTTP status code (`0` on failure).
     public let status: NumberRegisterOperand
     /// Handle to the response body for the `board.json` inspection ops.
-    public let body: JSONOperand
+    public let body: JSONHandle
+    /// Handle to the response body as raw text for the `board.string` ops.
+    public let text: StringHandle
 }
 
 /// Result-status codes the device records for an inspection op (matches the firmware's
 /// `ST_*` values). Staleness of a borrowed body handle is surfaced on the host via
-/// ``JSONOperand/isValid()``.
+/// ``JSONHandle/isValid()``.
 public enum TaskResultStatus: Int32, Sendable {
     case ok = 0, notFound = 1, stale = 2, typeMismatch = 3, tooBig = 4, allocFailed = 5
 }

@@ -392,7 +392,7 @@ carry the *static type* so the API tells you what a value is:
 | `NumberOperand` | `.number(_)`, `NumberOperand(_)`, `.reg(_)`, arithmetic, `json.number/type/size/stringLength` | Int32 value / register |
 | `FloatOperand` | `.float(_)`, `FloatOperand(_)`, `.freg(_)`, float arithmetic, `json.float` | Float value / register |
 | `BoolOperand` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.stringEquals/stringContains/bodyContains`, `isValid()` | 0/1 result |
-| `JSONOperand` | `response.body`, `json.snapshot` | a response-body handle (not a comparable value) |
+| `JSONHandle` | `response.body`, `json.snapshot` | a response-body handle (not a comparable value) |
 
 ```swift
 // Literals — use these almost everywhere:
@@ -491,7 +491,7 @@ try await client.uploadTask(id: 1) { t in
 ## 17. Internet inside a task
 
 `httpGet`/`httpPost` recorded into a task return a **`TaskHTTPResponse`**: branch on
-`.status`, and pass `.body` (a `JSONOperand`) to the `board.json` inspection ops (§18).
+`.status`, and pass `.body` (a `JSONHandle`) to the `board.json` inspection ops (§18).
 The full body is retained on the device for inspection — no host needed.
 
 ```swift
@@ -526,7 +526,7 @@ a typed result register. `path` is dotted/indexed:
 ```swift
 try await client.uploadTask(id: 6) { board in
     let r = board.httpGet("https://example.com/data")
-    let body = r.body                                // JSONOperand handle (§19)
+    let body = r.body                                // JSONHandle handle (§19)
 
     // Numbers:
     let n  = board.json.number(body, "count")                 // -> NumberOperand
@@ -694,10 +694,10 @@ class TaskOperand { /* base */ }
 final class NumberOperand: TaskOperand {}   // .number(_) / NumberOperand(_) / .reg(_)
 final class FloatOperand:  TaskOperand {}   // .float(_)  / FloatOperand(_)  / .freg(_)
 final class BoolOperand:   TaskOperand {}   // .bool(_)   / compare / predicates / isValid()
-final class JSONOperand:   TaskOperand {    // a response-body handle
+final class JSONHandle:   TaskOperand {    // a response-body handle
     func isValid() -> BoolOperand
 }
-struct TaskHTTPResponse { let status: NumberOperand; let body: JSONOperand }
+struct TaskHTTPResponse { let status: NumberOperand; let body: JSONHandle }
 
 enum TaskComparison: UInt8 { case equal, notEqual, lessThan, greaterThan, lessOrEqual, greaterOrEqual }
 enum TaskJSONValueType:  Int32  { case missing, object, array, string, number, bool, null }      // 0…6

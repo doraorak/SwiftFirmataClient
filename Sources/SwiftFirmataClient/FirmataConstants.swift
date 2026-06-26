@@ -141,4 +141,10 @@ enum Sched {
     static let extFree:        UInt8 = 0x25  // free a snapshot slot
     static let extLastStatus:  UInt8 = 0x26  // R[dst] = status of last inspection op
     static let extCmp:         UInt8 = 0x27  // R[dst] = (A op B) ? 1 : 0
+    // Raw-string ops over the selected body (board.string). `contains` reuses extBodyContains.
+    static let extStrBodyLen:  UInt8 = 0x28  // R[dst] = byte length of the selected body
+    static let extStrEquals:   UInt8 = 0x29  // R[dst] = (selected body == s) ? 1 : 0
+    static let extStrIndexOf:  UInt8 = 0x2A  // R[dst] = index of s in body, or -1
+    static let extStrToNum:    UInt8 = 0x2B  // R[dst] = body parsed as int; R[found] = 0/1
+    static let extStrToFloat:  UInt8 = 0x2C  // F[fdst] = body parsed as float; R[found] = 0/1
 }

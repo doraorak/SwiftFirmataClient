@@ -218,7 +218,7 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
 - `httpGet(_:)` / `httpPost(_:body:)` **return a `TaskHTTPResponse`** — branch on
   `resp.status` (HTTP status; `0` = Wi-Fi down / failure). Status register
   auto-allocates (or pass `statusInto:`). The body is retained for inspection via `resp.body`.
-- **`board.json` ops** take the body handle (`resp.body`, a `JSONOperand`) and return a
+- **`board.json` ops** take the body handle (`resp.body`, a `JSONHandle`) and return a
   **typed** result operand (auto-allocated R15↓ or via `into:`). They select the body's
   source automatically (no manual step):
   - `json.number(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
