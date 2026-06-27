@@ -43,32 +43,32 @@ struct InternetActionTests {
 
     // MARK: - Response-inspection op encoding
 
-    @Test func jsonNumberAutoRegisters() {
-        var r = FirmataTaskRecorder()
-        let v = r.jsonNumber("id", scaledBy: 2)   // dst auto=15, found auto=14
+    @Test func jsonNumberEncoding() {
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x")
+        let v = r.json.getNumber(h.body, "id", scaledBy: 2, into: .reg(15), found: .reg(14))
         #expect(v.register == 15)
-        #expect(r.bytes == [
-            0xF0, 0x7B, 0x7F, 0x16,
-            15, 14, 2,                 // dst=15, found=14, scale=2
-            0x02, 0x00, 105, 100,      // path "id"
-            0xF7,
+        #expect(Array(r.bytes.suffix(12)) == [   // the JSON_NUM op (after SELECT live)
+            0xF0, 0x7B, 0x7F, 0x16, 15, 14, 2, 0x02, 0x00, 105, 100, 0xF7,
         ])
     }
 
     @Test func jsonNumberExplicitRegisters() {
-        var r = FirmataTaskRecorder()
-        let v = r.jsonNumber("a", into: .reg(3), found: .reg(4))   // scale defaults to 0
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x")
+        let v = r.json.getNumber(h.body, "a", into: .reg(3), found: .reg(4))   // scale defaults to 0
         #expect(v.register == 3)
-        #expect(r.bytes == [
+        #expect(Array(r.bytes.suffix(11)) == [
             0xF0, 0x7B, 0x7F, 0x16, 3, 4, 0, 0x01, 0x00, 97, 0xF7,
         ])
     }
 
     @Test func bodyContainsEncoding() {
-        var r = FirmataTaskRecorder()
-        let b = r.bodyContains("OK")   // auto dst=15
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x")
+        let b = r.json.bodyContains(h.body, "OK", into: .boolReg(15))
         #expect(b.register == 15)
-        #expect(r.bytes == [
+        #expect(Array(r.bytes.suffix(10)) == [
             0xF0, 0x7B, 0x7F, 0x18, 15, 0x02, 0x00, 79, 75, 0xF7,
         ])
     }
@@ -149,40 +149,48 @@ struct InternetActionTests {
     }
 
     @Test func jsonFloatEncoding() {
-        var r = FirmataTaskRecorder()
-        let v = r.jsonFloat("p", into: .freg(1), found: .reg(2))
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x")
+        let v = r.json.getFloat(h.body, "p", into: .freg(1), found: .reg(2))
         #expect(v.register == 1)
-        #expect(r.bytes == [
-            0xF0, 0x7B, 0x7F, 0x1D, 1, 2,   // fdst=1, found=2
-            0x01, 0x00, 112,                // path "p"
-            0xF7,
+        #expect(Array(r.bytes.suffix(10)) == [
+            0xF0, 0x7B, 0x7F, 0x1D, 1, 2, 0x01, 0x00, 112, 0xF7,   // JSON_FLOAT (after SELECT live)
         ])
     }
 
     // MARK: - Query ops (jsonType / jsonSize / heapStats)
 
     @Test func queryOpEncoding() {
-        for (op, build): (UInt8, (inout FirmataTaskRecorder) -> Void) in [
-            (0x1E, { _ = $0.jsonType("p", into: .reg(3)) }),
-            (0x1F, { _ = $0.jsonSize("p", into: .reg(3)) }),
+        for (op, build): (UInt8, (FirmataTaskRecorder, JSONHandle) -> Void) in [
+            (0x1E, { _ = $0.json.getType($1, "p", into: .reg(3)) }),
+            (0x1F, { _ = $0.json.getSize($1, "p", into: .reg(3)) }),
         ] {
-            var r = FirmataTaskRecorder(); build(&r)
-            #expect(r.bytes == [0xF0, 0x7B, 0x7F, op, 3, 0x01, 0x00, 112, 0xF7])
+            let r = FirmataTaskRecorder(); let h = r.httpGet("http://x"); build(r, h.body)
+            #expect(Array(r.bytes.suffix(9)) == [0xF0, 0x7B, 0x7F, op, 3, 0x01, 0x00, 112, 0xF7])
         }
     }
 
     @Test func getStringEncoding() {
-        var r = FirmataTaskRecorder()
-        let slot = r.jsonGetString("p", into: 0)          // 0x2C slot pathLo pathHi path…
-        #expect(slot == 0)
-        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2C, 0, 0x01, 0x00, 112, 0xF7])
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x")
+        let s = r.json.getString(h.body, "p")             // 0x2C slot pathLo pathHi path…
+        #expect(s.slot.index == 0)                         // string slot 0 → firmware slot 2
+        #expect(Array(r.bytes.suffix(9)) == [0xF0, 0x7B, 0x7F, 0x2C, 2, 0x01, 0x00, 112, 0xF7])
     }
 
-    @Test func standaloneStringHandleEncoding() {
+    @Test func createStringEncoding() {
         let r = FirmataTaskRecorder()
-        let s = StringHandle("hi", on: r)                 // 0x2D slot strLo strHi str… (literal -> slot)
-        #expect(s.snapshotSlot == 0)
-        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2D, 0, 0x02, 0x00, 104, 105, 0xF7])
+        let s = r.string.createString("hi")               // 0x2D slot strLo strHi str… (literal -> slot)
+        #expect(s.slot.index == 0)                         // string slot 0 → firmware slot 2
+        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2D, 2, 0x02, 0x00, 104, 105, 0xF7])
+    }
+
+    @Test func changeSlotEncoding() {
+        let r = FirmataTaskRecorder()
+        let s = r.string.createString("hi")               // string slot 0 (fw 2)
+        s.changeSlot(StringSlot(3))                        // copy fw 2 -> fw 5, rebind
+        #expect(s.slot.index == 3)
+        #expect(Array(r.bytes.suffix(7)) == [0xF0, 0x7B, 0x7F, 0x2E, 5, 2, 0xF7])  // COPY_SLOT dst=5 src=2
     }
 
     @Test func heapStatsEncoding() {
@@ -236,9 +244,9 @@ struct InternetActionTests {
     @Test func snapshotUpgradesHandleInPlaceThenFree() {
         let r = FirmataTaskRecorder()
         let a = r.httpGet("http://x")        // borrowed handle (status R15, gen R0)
-        r.snapshot(a.body)                   // in-place upgrade -> owns slot 0
-        #expect(a.body.snapshotSlot == 0)
-        r.free(a.body)
+        r.snapshotJson(a.body)               // in-place upgrade -> owns JSON slot 0
+        #expect(a.body.snapshotSlot?.index == 0)
+        r.freeJson(a.body)
         let expectedTail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x23, 0, 0, 0, 0xF7] +   // snapshot slot 0, whole body
             [0xF0, 0x7B, 0x7F, 0x25, 0, 0xF7]           // free slot 0
@@ -259,7 +267,7 @@ struct InternetActionTests {
     @Test func isValidOnOwnedSnapshotIsConstTrue() {
         let r = FirmataTaskRecorder()
         let resp = r.httpGet("http://x")
-        r.json.snapshot(resp.body)           // owned -> always valid
+        r.snapshotJson(resp.body)            // owned -> always valid
         let v = resp.body.isValid()
         #expect(v.register == nil)           // a literal true, not a register read
     }
@@ -286,8 +294,8 @@ struct InternetActionTests {
     @Test func jsonNamespaceSnapshotSelectsSnapshot() {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
-        r.json.snapshot(h.body)                       // in-place -> owns slot 0
-        #expect(h.body.snapshotSlot == 0)
+        r.snapshotJson(h.body)                        // in-place -> owns slot 0
+        #expect(h.body.snapshotSlot?.index == 0)
         _ = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x24, 0x01, 0x00, 0xF7] +             // SELECT snapshot (sel = 1)
@@ -298,13 +306,13 @@ struct InternetActionTests {
     // MARK: - Inspection operands flow into ifTrue / auto-register descent
 
     @Test func jsonNumberFlowsIntoIfTrue() {
-        var r = FirmataTaskRecorder()
-        r.httpGet("http://x", statusInto: .reg(0))
-        let pct = r.jsonNumber("changePercent", scaledBy: 2)   // dst=15, found=14
+        let r = FirmataTaskRecorder()
+        let h = r.httpGet("http://x", statusInto: .reg(0))
+        let pct = r.json.getNumber(h.body, "changePercent", scaledBy: 2)   // dst=15, found=14
         #expect(pct.register == 15)
         r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: 2, high: true) }
         // The next auto-allocated read should be R13 (15 and 14 already taken).
-        let nxt = r.bodyContains("x")
+        let nxt = r.json.bodyContains(h.body, "x")
         #expect(nxt.register == 13)
     }
 

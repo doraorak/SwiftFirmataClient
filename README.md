@@ -250,7 +250,7 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   later requests. A *borrowed* (non-snapshotted) handle goes **stale** once a newer request
   replaces the live body; guard it with `body.isValid()`:
   ```swift
-  let a = board.httpGet(urlA); board.json.snapshot(a.body)   // a.body now owns a snapshot
+  let a = board.httpGet(urlA); board.snapshotJson(a.body)   // a.body now owns a snapshot
   let b = board.httpGet(urlB)                                 // a's live body would be stale
   let aVal = board.json.getNumber(a.body, "price")              // from A (snapshot)
   let bVal = board.json.getNumber(b.body, "price")              // from B (live)
@@ -345,7 +345,7 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   `4` number, `5` bool, `6` null. `JSON_SIZE` (`0x1F`) → span byte length. `STR_LEN`
   (`0x20`) → string content length. `HEAP` (`0x21`) → free heap + largest block.
 - Handles (3b2): `BODY_GEN` (`0x22`) captures the current generation. `SNAPSHOT`
-  (`0x23`) copies a value into one of **5** grow-only slots that survive the next
+  (`0x23`) copies a value into one of the 12 grow-only slots (2 JSON + 10 string) that survive the next
   request. `SELECT` (`0x24`) chooses the inspection source — a snapshot, or the
   live body checked against a captured generation (a borrowed source selected
   after a newer request reads as **stale**). `FREE` (`0x25`) releases a slot.
@@ -356,9 +356,10 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   at a path into a snapshot slot (`board.json.getString` → a `StringHandle`); the `board.string`
   ops then run on it: `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → equals;
   `STR_INDEXOF` (`0x2A`) → index, or `-1`; `STR_TO_NUM` (`0x2B`) → leading integer (+ found
-  flag); `contains` reuses `BODY_CONTAINS` (`0x18`). `STR_SET_SLOT` (`0x2D`) fills a slot from
-  a **literal** string — backs the standalone `StringHandle("…", on: board)` initialiser
-  (a `board.string` value without an HTTP body).
+  flag); `contains` reuses `BODY_CONTAINS` (`0x18`). `STR_SET_SLOT` (`0x2D`) fills a slot from a
+  **literal** (`board.string.createString`); `STR_COPY_SLOT` (`0x2E`) copies one string slot into
+  another (`StringHandle.changeSlot` / `board.snapshotString`). Slots are typed: `JSONSlot` (2)
+  and `StringSlot` (10), 12 device slots total.
 
 The device replies (only when a host is connected) with the result:
 

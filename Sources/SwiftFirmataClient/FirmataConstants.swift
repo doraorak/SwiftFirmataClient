@@ -133,7 +133,7 @@ enum Sched {
     static let extJsonFloat:   UInt8 = 0x1D  // F[dst] = json float at path; R[found]
     static let extJsonType:    UInt8 = 0x1E  // R[dst] = json type at path
     static let extJsonSize:    UInt8 = 0x1F  // R[dst] = byte length of value span at path
-    static let extStrLen:      UInt8 = 0x20  // R[dst] = content length of json string at path
+    static let extStringLen:   UInt8 = 0x20  // R[dst] = content length of json string at path (unused by client)
     static let extHeap:        UInt8 = 0x21  // R[freeReg]=free heap, R[largestReg]=largest block
     static let extRequestCount:     UInt8 = 0x22  // R[dst] = current request count (internal)
     static let extSnapshot:    UInt8 = 0x23  // copy value at path from live body into a slot
@@ -141,11 +141,12 @@ enum Sched {
     static let extFree:        UInt8 = 0x25  // free a snapshot slot
     static let extLastStatus:  UInt8 = 0x26  // R[dst] = status of last inspection op
     static let extCmp:         UInt8 = 0x27  // R[dst] = (A op B) ? 1 : 0
-    // Raw-string ops over the selected body (board.string). `contains` reuses extBodyContains.
-    static let extStrBodyLen:  UInt8 = 0x28  // R[dst] = byte length of the selected body
-    static let extStrEquals:   UInt8 = 0x29  // R[dst] = (selected body == s) ? 1 : 0
-    static let extStrIndexOf:  UInt8 = 0x2A  // R[dst] = index of s in body, or -1
-    static let extStrToNum:    UInt8 = 0x2B  // R[dst] = body parsed as int; R[found] = 0/1
-    static let extJsonGetString: UInt8 = 0x2C  // copy a JSON string's content at path into a snapshot slot
-    static let extStrSetSlot:  UInt8 = 0x2D  // set a snapshot slot's content to a literal string (standalone StringHandle)
+    // String ops over the selected string slot (board.string). `contains` reuses extBodyContains.
+    static let extStringBodyLen: UInt8 = 0x28  // R[dst] = byte length of the selected string
+    static let extStringEquals:  UInt8 = 0x29  // R[dst] = (selected string == s) ? 1 : 0
+    static let extStringIndexOf: UInt8 = 0x2A  // R[dst] = index of s in the string, or -1
+    static let extStringToNum:   UInt8 = 0x2B  // R[dst] = string parsed as int; R[found] = 0/1
+    static let extJsonGetString: UInt8 = 0x2C  // copy a JSON string's content at path into a string slot
+    static let extStringSetSlot: UInt8 = 0x2D  // set a string slot's content to a literal string (createString)
+    static let extStringCopySlot: UInt8 = 0x2E  // copy one string slot's content into another (changeSlot/snapshotString)
 }

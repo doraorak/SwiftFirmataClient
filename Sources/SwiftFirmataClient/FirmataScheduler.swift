@@ -47,16 +47,20 @@ public struct SchedulerTask: Sendable {
 public final class FirmataTaskRecorder {
     /// The recorded bytes so far (the task program). Usually you don't touch this
     /// directly — `uploadTask` reads it for you.
-    public private(set) var bytes: [UInt8] = []
+    public internal(set) var bytes: [UInt8] = []
+
+    /// Append recorded op bytes — used by the `board.json` / `board.string` op builders.
+    func emit(_ b: [UInt8]) { bytes += b }
 
     /// Next register handed out by ``digitalRead(pin:)`` / ``analogRead(channel:)``
     /// (descends `R15 → R0`, then wraps).
     private var nextAutoRegister: NumberRegisterOperand = .reg(15)
-    /// Next float register auto-allocated for `jsonFloat` / float arithmetic
+    /// Next float register auto-allocated for `getFloat` / float arithmetic
     /// (descends `F7 → F0`, then wraps).
     private var nextAutoFloatRegister: FloatRegisterOperand = .freg(7)
-    /// Next snapshot slot auto-allocated by ``snapshot(_:into:)`` (0…N-1, then wraps).
-    private var nextSnapshotSlot: UInt8 = 0
+    /// Next JSON snapshot slot (0–1) and string slot (0–9), each wrapping.
+    private var nextJSONSlot: UInt8 = 0
+    private var nextStringSlot: UInt8 = 0
     /// Generation registers (for handle staleness) allocate bottom-up (R0↑) so they
     /// don't collide with the top-down (R15↓) pool used by reads/arithmetic results.
     private var nextRequestCountRegister: NumberRegisterOperand = .reg(0)
@@ -214,24 +218,31 @@ public final class FirmataTaskRecorder {
 
     /// Hand out the next auto-allocated register, descending `R15 → R0` then wrapping
     /// (kept high to avoid clashing with low registers you set explicitly).
-    private func allocateRegister() -> NumberRegisterOperand {
+    func allocateRegister() -> NumberRegisterOperand {
         let r = nextAutoRegister
         let raw = r.register
         nextAutoRegister = .reg((raw == 0) ? 15 : (raw - 1))
         return r
     }
 
-    private func allocateFloatRegister() -> FloatRegisterOperand {
+    func allocateFloatRegister() -> FloatRegisterOperand {
         let r = nextAutoFloatRegister
         let raw = r.register
         nextAutoFloatRegister = .freg((raw == 0) ? 7 : (raw - 1))
         return r
     }
 
-    private func allocateSnapshotSlot() -> UInt8 {
-        let s = nextSnapshotSlot
-        nextSnapshotSlot = (nextSnapshotSlot >= 4) ? 0 : (nextSnapshotSlot + 1)   // 5 slots (0–4)
-        return s
+    /// JSON snapshot slots — 2 of them (0–1), wrapping.
+    func allocateJSONSlot() -> JSONSlot {
+        let s = nextJSONSlot
+        nextJSONSlot = (nextJSONSlot >= 1) ? 0 : (nextJSONSlot + 1)
+        return JSONSlot(s)
+    }
+    /// String slots — 10 of them (0–9), wrapping.
+    func allocateStringSlot() -> StringSlot {
+        let s = nextStringSlot
+        nextStringSlot = (nextStringSlot >= 9) ? 0 : (nextStringSlot + 1)
+        return StringSlot(s)
     }
 
     private func allocateGenRegister() -> NumberRegisterOperand {
@@ -393,136 +404,63 @@ public final class FirmataTaskRecorder {
                                 body: JSONHandle(genReg: gReg, snapshotSlot: nil, rec: self))
     }
 
-    // MARK: Body handles — snapshot / select / free
+    // MARK: Handle lifecycle — typed select / snapshot / free
 
-    /// Persist the **whole current body** into a snapshot slot so it survives the next
-    /// request, **upgrading `body` in place** to an owned handle (its ``JSONHandle/snapshotSlot``
-    /// is set). Slot auto-allocated (0–1) unless given. Call right after the `httpGet` whose
-    /// body you want to keep; subsequent `board.json` ops on the same handle read the snapshot.
-    func snapshot(_ body: some ResponseBodyHandle, into slot: UInt8? = nil) {
-        let s = slot ?? allocateSnapshotSlot()
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
-                  s & 0x07, 0x00, 0x00, Cmd.endSysEx]      // pathLen 0 = whole body
-        body.snapshotSlot = s & 0x07
-    }
-
-    /// Choose which body the following inspection ops read: a snapshot (owned), or the
-    /// live body checked against this handle's generation (a borrowed handle used after a
-    /// newer request reads as **stale** — test it with ``JSONHandle/isValid()``).
-    func select(_ body: some ResponseBodyHandle) {
+    /// Select the JSON body source for the next inspection op: an owned snapshot slot, or
+    /// the live body checked for staleness against the handle's captured generation.
+    func selectJSON(_ body: JSONHandle) {
         if let slot = body.snapshotSlot {
-            bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
-                      (slot & 0x07) + 1, 0x00, Cmd.endSysEx]
+            emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
+                  slot.firmwareIndex + 1, 0x00, Cmd.endSysEx])
         } else {
-            bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
-                      0x00, body.genReg.register & 0x0F, Cmd.endSysEx]
+            emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
+                  0x00, body.genReg.register & 0x0F, Cmd.endSysEx])
         }
     }
 
-    /// Free a snapshot slot held by an owned body handle.
-    func free(_ body: some ResponseBodyHandle) {
+    /// Select a string's slot for the next `board.string` op.
+    func selectString(_ s: StringHandle) {
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
+              s.slot.firmwareIndex + 1, 0x00, Cmd.endSysEx])
+    }
+
+    /// Persist the **whole current body** into a JSON snapshot slot so it survives the next
+    /// request, **upgrading `body` in place** (its ``JSONHandle/snapshotSlot`` is set). Slot
+    /// auto-allocated (0–1) unless given. Call right after the `httpGet` you want to keep.
+    public func snapshotJson(_ body: JSONHandle, into slot: JSONSlot? = nil) {
+        let s = slot ?? allocateJSONSlot()
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
+              s.firmwareIndex, 0x00, 0x00, Cmd.endSysEx])      // pathLen 0 = whole body
+        body.snapshotSlot = s
+    }
+    /// Free the JSON snapshot slot held by `body` (if any).
+    public func freeJson(_ body: JSONHandle) {
         guard let slot = body.snapshotSlot else { return }
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot & 0x07, Cmd.endSysEx]
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot.firmwareIndex, Cmd.endSysEx])
+        body.snapshotSlot = nil
+    }
+    /// Copy a string into a fresh slot and return a new handle to it (`s` is unchanged).
+    @discardableResult
+    public func snapshotString(_ s: StringHandle, into slot: StringSlot? = nil) -> StringHandle {
+        let dst = slot ?? allocateStringSlot()
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringCopySlot,
+              dst.firmwareIndex, s.slot.firmwareIndex, Cmd.endSysEx])
+        return StringHandle(slot: dst, rec: self)
+    }
+    /// Free the slot held by a string handle.
+    public func freeString(_ s: StringHandle) {
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, s.slot.firmwareIndex, Cmd.endSysEx])
     }
 
     /// Read the device's current request count (body generation) into a register.
     /// Used by ``JSONHandle/isValid()`` to compare against a handle's captured generation.
     func currentRequestCount(into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         let dst = into ?? allocateRegister()
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst.register & 0x0F, Cmd.endSysEx]
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst.register & 0x0F, Cmd.endSysEx])
         return dst
     }
 
-    // MARK: Response inspection (operate on the last httpGet/httpPost body)
-
-    /// Record reading a **number from the last response's JSON** at `path` into a
-    /// register, scaled by `10^scaledBy` and truncated (so fractions survive in the
-    /// Int32 register — `changePercent -0.42` with `scaledBy: 2` → `-42`). Returns
-    /// the value register as a ``TaskOperand`` for `ifTrue`.
-    ///
-    /// `path` is dotted with array indices, e.g. `quoteResponse.result[0].regularMarketChangePercent`.
-    /// - Parameters:
-    ///   - path: JSON path (ASCII).
-    ///   - scaledBy: Decimal places to keep (`0` = integer part only).
-    ///   - into: Value register; auto-allocated (R15↓) if omitted.
-    ///   - found: Register set to `1` if the path resolved to a number, else `0`; auto-allocated if omitted.
-    /// - Returns: The value register operand.
-    @discardableResult
-    func jsonNumber(_ path: String, scaledBy: UInt8 = 0,
-                                    into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        let dst = into ?? allocateRegister()
-        let fnd = found ?? allocateRegister()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonNum,
-                          dst.register & 0x0F, fnd.register & 0x0F, scaledBy]
-        appendLengthPrefixed(&m, path)
-        m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-
-    /// Record testing whether the whole last response body **contains** `text`
-    /// (raw substring). Returns the `0/1` result register.
-    @discardableResult
-    func bodyContains(_ text: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        let dst = into ?? BoolRegisterOperand(allocateRegister())
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.register & 0x0F]
-        appendLengthPrefixed(&m, text)
-        m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-
-    /// Record copying the **content** (unquoted) of the JSON string at `path` from the
-    /// live body into snapshot `slot` (auto-allocated if nil). Returns the slot used.
-    /// Backs ``JSONOps/getString(_:_:into:)``.
-    func jsonGetString(_ path: String, into slot: UInt8? = nil) -> UInt8 {
-        let s = slot ?? allocateSnapshotSlot()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, s & 0x07]
-        appendLengthPrefixed(&m, path)
-        m.append(Cmd.endSysEx); bytes += m
-        return s & 0x07
-    }
-
-    /// Record setting snapshot `slot` (auto-allocated if nil) to a **literal** string —
-    /// backs the standalone ``StringHandle`` initialiser. Returns the slot used.
-    func strSetSlot(_ value: String, into slot: UInt8? = nil) -> UInt8 {
-        let s = slot ?? allocateSnapshotSlot()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrSetSlot, s & 0x07]
-        appendLengthPrefixed(&m, value)
-        m.append(Cmd.endSysEx); bytes += m
-        return s & 0x07
-    }
-
-    // MARK: Raw-string ops over the selected body (board.string)
-
-    @discardableResult
-    func strBodyLength(into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        let dst = into ?? allocateRegister()
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrBodyLen, dst.register & 0x0F, Cmd.endSysEx]
-        return dst
-    }
-    @discardableResult
-    func strEquals(_ value: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        let dst = into ?? BoolRegisterOperand(allocateRegister())
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrEquals, dst.register & 0x0F]
-        appendLengthPrefixed(&m, value); m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-    @discardableResult
-    func strIndexOf(_ sub: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        let dst = into ?? allocateRegister()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrIndexOf, dst.register & 0x0F]
-        appendLengthPrefixed(&m, sub); m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-    @discardableResult
-    func strToNum(into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        let dst = into ?? allocateRegister()
-        let fnd = found ?? allocateRegister()
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrToNum,
-                  dst.register & 0x0F, fnd.register & 0x0F, Cmd.endSysEx]
-        return dst
-    }
-
-    private func appendLengthPrefixed(_ m: inout [UInt8], _ s: String) {
+    func appendLengthPrefixed(_ m: inout [UInt8], _ s: String) {
         let b = Array(s.utf8)
         m += [UInt8(b.count & 0x7F), UInt8((b.count >> 7) & 0x7F)]
         m += b.map { $0 & 0x7F }      // ASCII expected
@@ -580,20 +518,6 @@ public final class FirmataTaskRecorder {
         return dst
     }
 
-    /// Record reading a **float** from the last response's JSON at `path` into a
-    /// float register (handles unquoted `593.2`, quoted `"593.2"`, and exponents).
-    /// Returns the float register operand; `found` (int reg) is `1`/`0`.
-    @discardableResult
-    func jsonFloat(_ path: String, into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
-        let dst = into ?? allocateFloatRegister()
-        let fnd = found ?? allocateRegister()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonFloat,
-                          dst.register & 0x07, fnd.register & 0x0F]
-        appendLengthPrefixed(&m, path)
-        m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-
     /// Record `F[dst] = a + b` (float). Operands may be float/int registers or
     /// literals (ints promote to float). Result float register auto-allocated
     /// (F7↓) unless `into:` is given. `÷0` → 0.
@@ -623,28 +547,6 @@ public final class FirmataTaskRecorder {
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extArithFloat, sub, dst.register & 0x07]
         m += a.operandBytes
         m += b.operandBytes
-        m.append(Cmd.endSysEx); bytes += m
-        return dst
-    }
-
-    // MARK: Query the last response (inspect before you extract / store)
-
-    /// Record `R[dst]` = the ``TaskJSONValueType`` of the value at `path` (its raw value).
-    /// Branch with `ifTrue(t, .equal, .number(TaskJSONValueType.number.rawValue))`.
-    @discardableResult
-    func jsonType(_ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        queryOp(Sched.extJsonType, path, into)
-    }
-    /// Record `R[dst]` = byte length of the value's span at `path` (`0` if missing) —
-    /// size a snapshot before storing it.
-    @discardableResult
-    func jsonSize(_ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        queryOp(Sched.extJsonSize, path, into)
-    }
-    private func queryOp(_ op: UInt8, _ path: String, _ into: NumberRegisterOperand?) -> NumberRegisterOperand {
-        let dst = into ?? allocateRegister()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, op, dst.register & 0x0F]
-        appendLengthPrefixed(&m, path)
         m.append(Cmd.endSysEx); bytes += m
         return dst
     }
@@ -690,92 +592,146 @@ public final class FirmataTaskRecorder {
 }
 
 /// JSON inspection of a recorded response body (reached via ``FirmataTaskRecorder/json``).
-/// Each call takes a ``JSONHandle`` body handle (from ``TaskHTTPResponse/body`` or
-/// ``snapshot(_:into:)``): it selects that source on the device — a snapshot, or the live
-/// body checked for staleness against the handle's generation — then records the op. Branch
-/// on results with `board.ifTrue`, and guard a borrowed handle's freshness with
-/// ``JSONHandle/isValid()``.
+/// Each call takes a ``JSONHandle`` (from ``TaskHTTPResponse/body`` or ``snapshotJson(_:into:)``):
+/// it selects that source on the device — a snapshot, or the live body checked for staleness
+/// against the handle's generation — then records the op. Branch on results with `board.ifTrue`.
 public struct JSONOps {
     let rec: FirmataTaskRecorder
 
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
     public func getNumber(_ body: JSONHandle, _ path: String, scaledBy: UInt8 = 0,
-                       into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(body); return rec.jsonNumber(path, scaledBy: scaledBy, into: into, found: found)
+                          into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+        rec.selectJSON(body)
+        let dst = into ?? rec.allocateRegister()
+        let fnd = found ?? rec.allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonNum,
+                          dst.register & 0x0F, fnd.register & 0x0F, scaledBy]
+        rec.appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
     public func getFloat(_ body: JSONHandle, _ path: String,
-                      into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
-        rec.select(body); return rec.jsonFloat(path, into: into, found: found)
+                         into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
+        rec.selectJSON(body)
+        let dst = into ?? rec.allocateFloatRegister()
+        let fnd = found ?? rec.allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonFloat,
+                          dst.register & 0x07, fnd.register & 0x0F]
+        rec.appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
     public func bodyContains(_ body: JSONHandle, _ text: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        rec.select(body); return rec.bodyContains(text, into: into)
+        rec.selectJSON(body)
+        let dst = into ?? BoolRegisterOperand(rec.allocateRegister())
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, text)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
     @discardableResult
     public func getType(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(body); return rec.jsonType(path, into: into)
+        rec.selectJSON(body)
+        let dst = into ?? rec.allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonType, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
     public func getSize(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(body); return rec.jsonSize(path, into: into)
+        rec.selectJSON(body)
+        let dst = into ?? rec.allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonSize, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
-    /// Navigate to the **string** value at `path` and capture its content (unquoted) into a
-    /// snapshot slot, returning a ``StringHandle`` for the `board.string` ops. Slot
-    /// auto-allocated (0–1) unless given; release it with `board.string.free(_:)`.
+    /// Navigate to the **string** value at `path`, capture its content (unquoted) into a
+    /// ``StringSlot``, and return a ``StringHandle`` for the `board.string` ops. Slot
+    /// auto-allocated (0–9) unless given; release it with `board.freeString(_:)`.
     /// (Reads the **live** body, so call it right after the `httpGet`.)
     @discardableResult
-    public func getString(_ body: JSONHandle, _ path: String, into slot: UInt8? = nil) -> StringHandle {
-        let s = rec.jsonGetString(path, into: slot)
-        return StringHandle(genReg: body.genReg, snapshotSlot: s, rec: rec)
+    public func getString(_ body: JSONHandle, _ path: String, into slot: StringSlot? = nil) -> StringHandle {
+        let dst = slot ?? rec.allocateStringSlot()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, dst.firmwareIndex]
+        rec.appendLengthPrefixed(&m, path)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return StringHandle(slot: dst, rec: rec)
     }
-    /// Persist the body into a slot that survives the next request, **upgrading `body` in
-    /// place** to an owned handle — call right after the `httpGet` you want to keep.
-    public func snapshot(_ body: JSONHandle, into slot: UInt8? = nil) { rec.snapshot(body, into: slot) }
-    /// Free a snapshot slot held by an owned body handle.
-    public func free(_ body: JSONHandle) { rec.free(body) }
 }
 
-/// Raw-string inspection of a recorded response body (reached via ``FirmataTaskRecorder/string``).
-/// Each call takes a ``StringHandle`` from ``JSONOps/getString(_:_:into:)``: it selects that
-/// captured string on the device, then records the op. Branch on results with `board.ifTrue`.
+/// Raw-string inspection of a captured string (reached via ``FirmataTaskRecorder/string``).
+/// Each call takes a ``StringHandle`` — from ``JSONOps/getString(_:_:into:)`` or
+/// ``createString(_:)`` — selects its slot on the device, then records the op.
 public struct StringOps {
     let rec: FirmataTaskRecorder
 
-    /// `R` = byte length of the whole string.
+    /// Make a standalone string from a literal, stored in an auto-allocated ``StringSlot``.
+    /// Release it with `board.freeString(_:)`.
+    @discardableResult
+    public func createString(_ value: String) -> StringHandle {
+        let slot = rec.allocateStringSlot()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringSetSlot, slot.firmwareIndex]
+        rec.appendLengthPrefixed(&m, value)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return StringHandle(slot: slot, rec: rec)
+    }
+    /// `R` = byte length of the string.
     @discardableResult
     public func length(_ s: StringHandle, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(s); return rec.strBodyLength(into: into)
+        rec.selectString(s)
+        let dst = into ?? rec.allocateRegister()
+        rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringBodyLen, dst.register & 0x0F, Cmd.endSysEx])
+        return dst
     }
     /// `R` = (string == `value`) ? 1 : 0.
     @discardableResult
     public func equals(_ s: StringHandle, _ value: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        rec.select(s); return rec.strEquals(value, into: into)
+        rec.selectString(s)
+        let dst = into ?? BoolRegisterOperand(rec.allocateRegister())
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringEquals, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, value)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = (string contains `substring`) ? 1 : 0.
     @discardableResult
     public func contains(_ s: StringHandle, _ substring: String, into: BoolRegisterOperand? = nil) -> BoolRegisterOperand {
-        rec.select(s); return rec.bodyContains(substring, into: into)
+        rec.selectString(s)
+        let dst = into ?? BoolRegisterOperand(rec.allocateRegister())
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, substring)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = index of `substring` in the string, or `-1` if absent.
     @discardableResult
     public func indexOf(_ s: StringHandle, _ substring: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(s); return rec.strIndexOf(substring, into: into)
+        rec.selectString(s)
+        let dst = into ?? rec.allocateRegister()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringIndexOf, dst.register & 0x0F]
+        rec.appendLengthPrefixed(&m, substring)
+        m.append(Cmd.endSysEx); rec.emit(m)
+        return dst
     }
     /// `R` = the string parsed as an integer (leading sign + digits); `R[found]` = 0/1.
     @discardableResult
     public func toInt(_ s: StringHandle, into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
-        rec.select(s); return rec.strToNum(into: into, found: found)
+        rec.selectString(s)
+        let dst = into ?? rec.allocateRegister()
+        let fnd = found ?? rec.allocateRegister()
+        rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringToNum,
+                  dst.register & 0x0F, fnd.register & 0x0F, Cmd.endSysEx])
+        return dst
     }
-    /// Persist the body into a slot that survives the next request, upgrading `s` in place.
-    public func snapshot(_ s: StringHandle, into slot: UInt8? = nil) { rec.snapshot(s, into: slot) }
-    /// Free a snapshot slot held by an owned handle.
-    public func free(_ s: StringHandle) { rec.free(s) }
 }
 
 /// A typed value the device evaluates in ``FirmataTaskRecorder/ifTrue(_:_:_:then:elseDo:)``
@@ -949,40 +905,39 @@ public extension BoolRegisterOperand {
     }
 }
 
-/// A handle to a **response body** recorded in a task — reach it via
-/// ``TaskHTTPResponse/body`` and pass it to the `board.json` inspection ops
-/// (`board.json.number(body, …)`, `.float`, `.stringEquals`, …).
-///
-/// A *borrowed* handle reads the device's live body, checked for staleness against the
-/// generation captured when the request was recorded (a later request makes it stale —
-/// test it with ``isValid()``). ``JSONOps/snapshot(_:into:)`` upgrades a handle **in place**
-/// to an *owned* one that pins a persisted copy in a slot (so it survives later requests).
-/// Unlike the value operands it carries a source reference rather than a comparable value,
-/// so it is a standalone handle rather than a ``TaskOperand``.
-/// Shared device-body handle — a JSON view (``JSONHandle``) or raw-string view
-/// (``StringHandle``) of a recorded response body. The select/snapshot/free machinery
-/// works on either.
-protocol ResponseBodyHandle: AnyObject {
-    var genReg: NumberRegisterOperand { get }
-    var snapshotSlot: UInt8? { get set }
+/// One of the device's **JSON snapshot slots** (`0`–`1`) — a typed slot, like a register operand.
+public struct JSONSlot: Sendable {
+    public let index: UInt8
+    public init(_ index: UInt8) { self.index = index }
+    var firmwareIndex: UInt8 { index & 0x01 }            // device snapshot pool: 0–1
 }
 
-public final class JSONHandle: @unchecked Sendable, ResponseBodyHandle {
+/// One of the device's **string slots** (`0`–`9`) — a typed slot, like a register operand.
+public struct StringSlot: Sendable {
+    public let index: UInt8
+    public init(_ index: UInt8) { self.index = index }
+    var firmwareIndex: UInt8 { (index % 10) + 2 }        // device snapshot pool: 2–11 (after the 2 JSON slots)
+}
+
+/// A handle to a **JSON response body** — reach it via ``TaskHTTPResponse/body`` and pass it
+/// to the `board.json` inspection ops. A *borrowed* handle reads the device's live body,
+/// checked for staleness against the generation captured at request time (a later request
+/// makes it stale — test it with ``isValid()``). ``FirmataTaskRecorder/snapshotJson(_:into:)``
+/// upgrades it **in place** to an owned copy in a ``JSONSlot`` that survives later requests.
+public final class JSONHandle: @unchecked Sendable {
     /// Register holding the body generation captured at request time (borrowed handle).
     let genReg: NumberRegisterOperand
-    /// Snapshot slot, once this handle has been snapshotted into an owned, persisted copy.
-    var snapshotSlot: UInt8?
+    /// Slot once snapshotted into an owned, persisted copy (`nil` = borrowed/live).
+    var snapshotSlot: JSONSlot?
     /// The recorder that produced this handle (so ``isValid()`` can record into the task).
     weak var rec: FirmataTaskRecorder?
 
-    init(genReg: NumberRegisterOperand, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
+    init(genReg: NumberRegisterOperand, snapshotSlot: JSONSlot?, rec: FirmataTaskRecorder?) {
         self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
     }
 
-    /// Record a boolean that is `true` while the captured live body is still the current
-    /// one, and branch on it with ``FirmataTaskRecorder/ifTrue(_:then:elseDo:)``. After a
-    /// newer request replaces the live body this reads `false`; an **owned** snapshot is
-    /// pinned, so it is always valid.
+    /// Record a boolean that is `true` while the captured live body is still the current one.
+    /// After a newer request replaces it this reads `false`; an owned snapshot is always valid.
     @discardableResult
     public func isValid() -> BoolOperand {
         guard snapshotSlot == nil, let rec else { return .bool(true) }
@@ -990,36 +945,23 @@ public final class JSONHandle: @unchecked Sendable, ResponseBodyHandle {
     }
 }
 
-/// A captured string value — produced by ``JSONOps/getString(_:_:into:)``, which copies a
-/// JSON string's content into a snapshot slot — inspected with the `board.string` ops.
-/// Structurally a body handle like ``JSONHandle``; the two differ only in which ops they feed.
-public final class StringHandle: @unchecked Sendable, ResponseBodyHandle {
-    let genReg: NumberRegisterOperand
-    var snapshotSlot: UInt8?
+/// A captured string living in a ``StringSlot`` — from ``JSONOps/getString(_:_:into:)`` or
+/// ``StringOps/createString(_:)`` — inspected with the `board.string` ops.
+public final class StringHandle: @unchecked Sendable {
+    /// The string slot this handle currently occupies.
+    public internal(set) var slot: StringSlot
     weak var rec: FirmataTaskRecorder?
 
-    init(genReg: NumberRegisterOperand, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
-        self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
+    init(slot: StringSlot, rec: FirmataTaskRecorder?) {
+        self.slot = slot; self.rec = rec
     }
 
-    /// Create a **standalone** string from a literal — independent of any HTTP body. Loads
-    /// `value` into a snapshot slot (auto-allocated unless `slot` is given) so the
-    /// `board.string` ops can run on it. Release the slot with `board.string.free(_:)`.
-    ///
-    /// ```swift
-    /// let s = StringHandle("on", on: board)
-    /// board.ifTrue(board.string.equals(s, "on")) { $0.digitalWrite(pin: 2, high: true) }
-    /// ```
-    public convenience init(_ value: String, on recorder: FirmataTaskRecorder, into slot: UInt8? = nil) {
-        let s = recorder.strSetSlot(value, into: slot)
-        self.init(genReg: NumberRegisterOperand(register: 0), snapshotSlot: s, rec: recorder)
-    }
-
-    /// `true` while the captured live body is still current (an owned snapshot is always valid).
-    @discardableResult
-    public func isValid() -> BoolOperand {
-        guard snapshotSlot == nil, let rec else { return .bool(true) }
-        return rec.compare(genReg, .equal, rec.currentRequestCount())
+    /// Copy this string's contents into `slot` on the device, then rebind this handle to it.
+    public func changeSlot(_ slot: StringSlot) {
+        guard let rec else { return }
+        rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringCopySlot,
+                  slot.firmwareIndex, self.slot.firmwareIndex, Cmd.endSysEx])
+        self.slot = slot
     }
 }
 

@@ -393,8 +393,8 @@ carry the *static type* so the API tells you what a value is:
 | `NumberOperand` | `.number(_)`, `NumberOperand(_)`, `.reg(_)`, arithmetic, `json.number/type/size`, `string.length/indexOf/toInt` | Int32 value / register |
 | `FloatOperand` | `.float(_)`, `FloatOperand(_)`, `.freg(_)`, float arithmetic, `json.float` | Float value / register |
 | `BoolOperand` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.bodyContains`, `string.equals/contains`, `isValid()` | 0/1 result |
-| `JSONHandle` | `response.body`, `json.snapshot` | a response-body handle (not a comparable value) |
-| `StringHandle` | `json.getString(body, "path")` | a captured string value, for the `board.string` ops |
+| `JSONHandle` | `response.body`, `snapshotJson` | a response-body handle (not a comparable value) |
+| `StringHandle` | `json.getString`, `string.createString` | a captured string value, for the `board.string` ops |
 
 ```swift
 // Literals — use these almost everywhere:
@@ -570,7 +570,7 @@ a *later* request overwrites. Two tools manage that:
 ```swift
 try await client.uploadTask(id: 7) { board in
     let a = board.httpGet(urlA)
-    board.json.snapshot(a.body)                       // IN-PLACE: a.body now OWNS a slot
+    board.snapshotJson(a.body)                       // IN-PLACE: a.body now OWNS a slot
     //   ^ upgrades the handle so it survives later requests; subsequent json ops on
     //     a.body read the persisted copy. (No return value — it mutates a.body.)
 
@@ -580,7 +580,7 @@ try await client.uploadTask(id: 7) { board in
     let bVal = board.json.getNumber(b.body, "price")      // from B (live)
     board.ifTrue(bVal, .greaterThan, aVal) { $0.digitalWrite(pin: 2, high: true) }
 
-    board.json.free(a.body)                            // release the snapshot slot (2 total)
+    board.freeJson(a.body)                            // release the snapshot slot (2 total)
 }
 ```
 
@@ -604,9 +604,9 @@ try await client.uploadTask(id: 8) { board in
 A **`StringHandle`** feeds the `board.string` ops. Get one two ways:
 
 - **From JSON** — `board.json.getString(body, "path")` captures a string value's content
-  (unquoted) into a snapshot slot (§18). Reads the **live** body, so call it right after the
+  (unquoted) into a ``StringSlot`` (§18). Reads the **live** body, so call it right after the
   `httpGet`.
-- **Standalone** — `StringHandle("literal", on: board)` loads a literal straight into a slot,
+- **Standalone** — `board.string.createString("literal")` loads a literal straight into a slot,
   no HTTP needed.
 
 Either way the ops are identical:
@@ -623,19 +623,23 @@ try await client.uploadTask(id: 9) { board in
     let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
     let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
     board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
-    board.string.free(s)                                  // release the slot when done
+    board.freeString(s)                                   // release the slot when done
     _ = (len, same, at, n)
 
     // Standalone literal — no HTTP:
-    let mode = StringHandle("on", on: board)
+    let mode = board.string.createString("on")
     board.ifTrue(board.string.equals(mode, "on")) { $0.digitalWrite(pin: 4, high: true) }
-    board.string.free(mode)
+    mode.changeSlot(StringSlot(9))                        // copy into a specific slot, rebind
+    board.freeString(mode)
 }
 ```
 
-Both kinds live in snapshot slots — there are **5** (`0`–`4`), auto-allocated and released with
-`board.string.free`. Backed by firmware ops `0x2C` (getString) / `0x2D` (standalone literal) to
-fill a slot, then `0x28`–`0x2B` / `0x18` for the ops. (`contains` reuses `0x18`.)
+**Slots are typed and separate**: `JSONSlot` (2: `0`–`1`) for `board.snapshotJson`, and
+`StringSlot` (10: `0`–`9`) for strings — both auto-allocated, passed explicitly as
+`into: JSONSlot(1)` / `into: StringSlot(3)`, and released with `board.freeJson` / `board.freeString`.
+`board.snapshotString(s)` copies a string into a fresh slot (returns a new handle);
+`s.changeSlot(_:)` moves a string into a given slot. Backed by firmware ops `0x2C` (getString) /
+`0x2D` (createString) / `0x2E` (copy-slot), then `0x28`–`0x2B` / `0x18` for the ops.
 
 ---
 
