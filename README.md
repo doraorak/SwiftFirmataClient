@@ -173,7 +173,7 @@ branch with `ifTrue`:
 // A night-light running entirely on the board, no client connected.
 try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
     t.setPinMode(2, mode: .output)
-    t.analogRead(into: 0, channel: 0)                 // R0 = analog A0
+    t.analogRead(into: .reg(0), channel: 0)           // R0 = analog A0
     t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
@@ -206,7 +206,7 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled (×100):
     //   -0.42  ->  -42 ;  path may be dotted/indexed: "result[0].changePercent"
-    let pct = board.json.number(spy.body, "changePercent", scaledBy: 2)
+    let pct = board.json.getNumber(spy.body, "changePercent", scaledBy: 2)
     board.ifTrue(spy.status, .equal, .number(200)) {           // only act on success
         $0.ifTrue(pct, .greaterThan, .number(0),
             then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
@@ -221,13 +221,13 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
 - **`board.json` ops** take the body handle (`resp.body`, a `JSONHandle`) and return a
   **typed** result operand (auto-allocated R15↓ or via `into:`). They select the body's
   source automatically (no manual step):
-  - `json.number(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
-    parses a **quoted** number `"593.2"`). `json.float(body, path)` → `FloatOperand`.
+  - `json.getNumber(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
+    parses a **quoted** number `"593.2"`). `json.getFloat(body, path)` → `FloatOperand`.
   - `json.bodyContains(body, text)` → `BoolOperand` (whole-body substring).
   - `json.getString(body, path)` → `StringHandle` — captures a string value (into a slot)
     for the `board.string` ops: `length`/`equals`/`contains`/`indexOf`/`toInt`.
-  - `json.type(body, path)` → a `TaskJSONValueType` raw value — branch before extracting.
-  - `json.size(body, path)` sizes a value; pair
+  - `json.getType(body, path)` → a `TaskJSONValueType` raw value — branch before extracting.
+  - `json.getSize(body, path)` sizes a value; pair
     with `board.heapStats(freeInto:largestInto:)` to **gate a store on free memory**.
   - `path` is dotted/indexed: `quoteResponse.result[0].regularMarketChangePercent`.
     Inspection walks the **full** body (no parse-size cap).
@@ -238,8 +238,8 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   on-device with floats:
   ```swift
   let spy   = board.httpGet(url)
-  let price = board.json.float(spy.body, "regularMarketPrice")   // e.g. 746.74
-  let prev  = board.json.float(spy.body, "chartPreviousClose")
+  let price = board.json.getFloat(spy.body, "regularMarketPrice")   // e.g. 746.74
+  let prev  = board.json.getFloat(spy.body, "chartPreviousClose")
   let pct   = board.multiplyFloat(board.divideFloat(board.subtractFloat(price, prev), prev),
                                   .float(100))                    // % change
   board.ifTrue(pct, .greaterThan, .float(0.5)) { … }             // up > 0.5%?
@@ -252,13 +252,13 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   ```swift
   let a = board.httpGet(urlA); board.json.snapshot(a.body)   // a.body now owns a snapshot
   let b = board.httpGet(urlB)                                 // a's live body would be stale
-  let aVal = board.json.number(a.body, "price")              // from A (snapshot)
-  let bVal = board.json.number(b.body, "price")              // from B (live)
+  let aVal = board.json.getNumber(a.body, "price")              // from A (snapshot)
+  let bVal = board.json.getNumber(b.body, "price")              // from B (live)
   board.ifTrue(bVal, .greaterThan, aVal) { … }
   board.json.free(a.body)
   // staleness: only trust a borrowed read while its body is still current:
   let c    = board.httpGet(urlC)
-  let cVal = board.json.number(c.body, "price")
+  let cVal = board.json.getNumber(c.body, "price")
   board.ifTrue(c.body.isValid()) { … }   // -> compares captured generation vs current
   ```
 - If a host is connected while the task runs, the full result also arrives as
@@ -345,7 +345,7 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   `4` number, `5` bool, `6` null. `JSON_SIZE` (`0x1F`) → span byte length. `STR_LEN`
   (`0x20`) → string content length. `HEAP` (`0x21`) → free heap + largest block.
 - Handles (3b2): `BODY_GEN` (`0x22`) captures the current generation. `SNAPSHOT`
-  (`0x23`) copies a value into one of 2 grow-only slots that survive the next
+  (`0x23`) copies a value into one of **5** grow-only slots that survive the next
   request. `SELECT` (`0x24`) chooses the inspection source — a snapshot, or the
   live body checked against a captured generation (a borrowed source selected
   after a newer request reads as **stale**). `FREE` (`0x25`) releases a slot.
@@ -356,7 +356,9 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   at a path into a snapshot slot (`board.json.getString` → a `StringHandle`); the `board.string`
   ops then run on it: `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → equals;
   `STR_INDEXOF` (`0x2A`) → index, or `-1`; `STR_TO_NUM` (`0x2B`) → leading integer (+ found
-  flag); `contains` reuses `BODY_CONTAINS` (`0x18`).
+  flag); `contains` reuses `BODY_CONTAINS` (`0x18`). `STR_SET_SLOT` (`0x2D`) fills a slot from
+  a **literal** string — backs the standalone `StringHandle("…", on: board)` initialiser
+  (a `board.string` value without an HTTP body).
 
 The device replies (only when a host is connected) with the result:
 

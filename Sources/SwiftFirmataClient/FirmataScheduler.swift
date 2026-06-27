@@ -55,7 +55,7 @@ public final class FirmataTaskRecorder {
     /// Next float register auto-allocated for `jsonFloat` / float arithmetic
     /// (descends `F7 → F0`, then wraps).
     private var nextAutoFloatRegister: FloatRegisterOperand = .freg(7)
-    /// Next snapshot slot auto-allocated by ``snapshot(_:into:)`` (0–1, then wraps).
+    /// Next snapshot slot auto-allocated by ``snapshot(_:into:)`` (0…N-1, then wraps).
     private var nextSnapshotSlot: UInt8 = 0
     /// Generation registers (for handle staleness) allocate bottom-up (R0↑) so they
     /// don't collide with the top-down (R15↓) pool used by reads/arithmetic results.
@@ -230,7 +230,7 @@ public final class FirmataTaskRecorder {
 
     private func allocateSnapshotSlot() -> UInt8 {
         let s = nextSnapshotSlot
-        nextSnapshotSlot = (nextSnapshotSlot == 1) ? 0 : (nextSnapshotSlot + 1)
+        nextSnapshotSlot = (nextSnapshotSlot >= 4) ? 0 : (nextSnapshotSlot + 1)   // 5 slots (0–4)
         return s
     }
 
@@ -402,8 +402,8 @@ public final class FirmataTaskRecorder {
     func snapshot(_ body: some ResponseBodyHandle, into slot: UInt8? = nil) {
         let s = slot ?? allocateSnapshotSlot()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
-                  s & 0x01, 0x00, 0x00, Cmd.endSysEx]      // pathLen 0 = whole body
-        body.snapshotSlot = s & 0x01
+                  s & 0x07, 0x00, 0x00, Cmd.endSysEx]      // pathLen 0 = whole body
+        body.snapshotSlot = s & 0x07
     }
 
     /// Choose which body the following inspection ops read: a snapshot (owned), or the
@@ -412,7 +412,7 @@ public final class FirmataTaskRecorder {
     func select(_ body: some ResponseBodyHandle) {
         if let slot = body.snapshotSlot {
             bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
-                      (slot & 0x01) + 1, 0x00, Cmd.endSysEx]
+                      (slot & 0x07) + 1, 0x00, Cmd.endSysEx]
         } else {
             bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
                       0x00, body.genReg.register & 0x0F, Cmd.endSysEx]
@@ -422,7 +422,7 @@ public final class FirmataTaskRecorder {
     /// Free a snapshot slot held by an owned body handle.
     func free(_ body: some ResponseBodyHandle) {
         guard let slot = body.snapshotSlot else { return }
-        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot & 0x01, Cmd.endSysEx]
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot & 0x07, Cmd.endSysEx]
     }
 
     /// Read the device's current request count (body generation) into a register.
@@ -475,10 +475,20 @@ public final class FirmataTaskRecorder {
     /// Backs ``JSONOps/getString(_:_:into:)``.
     func jsonGetString(_ path: String, into slot: UInt8? = nil) -> UInt8 {
         let s = slot ?? allocateSnapshotSlot()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, s & 0x01]
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, s & 0x07]
         appendLengthPrefixed(&m, path)
         m.append(Cmd.endSysEx); bytes += m
-        return s & 0x01
+        return s & 0x07
+    }
+
+    /// Record setting snapshot `slot` (auto-allocated if nil) to a **literal** string —
+    /// backs the standalone ``StringHandle`` initialiser. Returns the slot used.
+    func strSetSlot(_ value: String, into slot: UInt8? = nil) -> UInt8 {
+        let s = slot ?? allocateSnapshotSlot()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStrSetSlot, s & 0x07]
+        appendLengthPrefixed(&m, value)
+        m.append(Cmd.endSysEx); bytes += m
+        return s & 0x07
     }
 
     // MARK: Raw-string ops over the selected body (board.string)
@@ -690,13 +700,13 @@ public struct JSONOps {
 
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
-    public func number(_ body: JSONHandle, _ path: String, scaledBy: UInt8 = 0,
+    public func getNumber(_ body: JSONHandle, _ path: String, scaledBy: UInt8 = 0,
                        into: NumberRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonNumber(path, scaledBy: scaledBy, into: into, found: found)
     }
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
-    public func float(_ body: JSONHandle, _ path: String,
+    public func getFloat(_ body: JSONHandle, _ path: String,
                       into: FloatRegisterOperand? = nil, found: NumberRegisterOperand? = nil) -> FloatRegisterOperand {
         rec.select(body); return rec.jsonFloat(path, into: into, found: found)
     }
@@ -707,12 +717,12 @@ public struct JSONOps {
     }
     /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
     @discardableResult
-    public func type(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+    public func getType(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonType(path, into: into)
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
-    public func size(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
+    public func getSize(_ body: JSONHandle, _ path: String, into: NumberRegisterOperand? = nil) -> NumberRegisterOperand {
         rec.select(body); return rec.jsonSize(path, into: into)
     }
     /// Navigate to the **string** value at `path` and capture its content (unquoted) into a
@@ -990,6 +1000,19 @@ public final class StringHandle: @unchecked Sendable, ResponseBodyHandle {
 
     init(genReg: NumberRegisterOperand, snapshotSlot: UInt8?, rec: FirmataTaskRecorder?) {
         self.genReg = genReg; self.snapshotSlot = snapshotSlot; self.rec = rec
+    }
+
+    /// Create a **standalone** string from a literal — independent of any HTTP body. Loads
+    /// `value` into a snapshot slot (auto-allocated unless `slot` is given) so the
+    /// `board.string` ops can run on it. Release the slot with `board.string.free(_:)`.
+    ///
+    /// ```swift
+    /// let s = StringHandle("on", on: board)
+    /// board.ifTrue(board.string.equals(s, "on")) { $0.digitalWrite(pin: 2, high: true) }
+    /// ```
+    public convenience init(_ value: String, on recorder: FirmataTaskRecorder, into slot: UInt8? = nil) {
+        let s = recorder.strSetSlot(value, into: slot)
+        self.init(genReg: NumberRegisterOperand(register: 0), snapshotSlot: s, rec: recorder)
     }
 
     /// `true` while the captured live body is still current (an owned snapshot is always valid).

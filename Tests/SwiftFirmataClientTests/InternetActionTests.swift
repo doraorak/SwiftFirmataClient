@@ -178,6 +178,13 @@ struct InternetActionTests {
         #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2C, 0, 0x01, 0x00, 112, 0xF7])
     }
 
+    @Test func standaloneStringHandleEncoding() {
+        let r = FirmataTaskRecorder()
+        let s = StringHandle("hi", on: r)                 // 0x2D slot strLo strHi str… (literal -> slot)
+        #expect(s.snapshotSlot == 0)
+        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x2D, 0, 0x02, 0x00, 104, 105, 0xF7])
+    }
+
     @Test func heapStatsEncoding() {
         var r = FirmataTaskRecorder()
         let (f, l) = r.heapStats(freeInto: .reg(0), largestInto: .reg(1))
@@ -268,7 +275,7 @@ struct InternetActionTests {
     @Test func jsonNamespaceSelectsLiveThenInspects() {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")                 // borrowed; generation captured in R0
-        let v = r.json.number(h.body, "id", into: .reg(7), found: .reg(8))
+        let v = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
         #expect(v.register == 7)
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x24, 0x00, 0x00, 0xF7] +              // SELECT live, gen R0
@@ -281,7 +288,7 @@ struct InternetActionTests {
         let h = r.httpGet("http://x")
         r.json.snapshot(h.body)                       // in-place -> owns slot 0
         #expect(h.body.snapshotSlot == 0)
-        _ = r.json.number(h.body, "id", into: .reg(7), found: .reg(8))
+        _ = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x24, 0x01, 0x00, 0xF7] +             // SELECT snapshot (sel = 1)
             [0xF0, 0x7B, 0x7F, 0x16, 7, 8, 0, 0x02, 0x00, 105, 100, 0xF7]
