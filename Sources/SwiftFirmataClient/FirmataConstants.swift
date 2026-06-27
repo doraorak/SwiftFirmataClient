@@ -147,4 +147,5 @@ enum Sched {
     static let extStrIndexOf:  UInt8 = 0x2A  // R[dst] = index of s in body, or -1
     static let extStrToNum:    UInt8 = 0x2B  // R[dst] = body parsed as int; R[found] = 0/1
     static let extJsonGetString: UInt8 = 0x2C  // copy a JSON string's content at path into a snapshot slot
+    static let extStrSetSlot:  UInt8 = 0x2D  // set a snapshot slot's content to a literal string (standalone StringHandle)
 }

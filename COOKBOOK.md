@@ -29,9 +29,10 @@ any task. Add `import SwiftFirmataClient` at the top of each file.
 17. [Internet inside a task → `TaskHTTPResponse`](#17-internet-inside-a-task)
 18. [JSON inspection on the device (`board.json`)](#18-json-inspection-on-the-device)
 19. [Snapshots & staleness (`snapshot`, `isValid`, `free`)](#19-snapshots--staleness)
-20. [Custom transport](#20-custom-transport)
-21. [Type reference](#21-type-reference)
-22. [Wi-Fi provisioning (encrypted, over BLE)](#22-wi-fi-provisioning-encrypted-over-ble)
+20. [Strings — `board.string`](#20-strings--boardstring)
+21. [Custom transport](#21-custom-transport)
+22. [Type reference](#22-type-reference)
+23. [Wi-Fi provisioning (encrypted, over BLE)](#23-wi-fi-provisioning-encrypted-over-ble)
 
 ---
 
@@ -52,7 +53,7 @@ let transport = BonjourTransport(named: "esp32-firmata",
 // (b) Bluetooth LE — Nordic UART Service. `peripheralName: nil` takes the first match.
 let transport = BLETransport(peripheralName: "esp32-firmata")
 
-// (c) Anything you implement — see §20 (Custom transport).
+// (c) Anything you implement — see §21 (Custom transport).
 ```
 
 ```swift
@@ -502,7 +503,7 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
 
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled ×100 (so -0.42 → -42).
-    let pct = board.json.number(spy.body, "changePercent", scaledBy: 2)
+    let pct = board.json.getNumber(spy.body, "changePercent", scaledBy: 2)
 
     board.ifTrue(spy.status, .equal, .number(200)) {           // only act on HTTP 200
         $0.ifTrue(pct, .greaterThan, .number(0),
@@ -530,18 +531,18 @@ try await client.uploadTask(id: 6) { board in
     let body = r.body                                // JSONHandle handle (§19)
 
     // Numbers:
-    let n  = board.json.number(body, "count")                 // -> NumberOperand
-    let n2 = board.json.number(body, "price", scaledBy: 2,    // ×100, truncated
+    let n  = board.json.getNumber(body, "count")                 // -> NumberOperand
+    let n2 = board.json.getNumber(body, "price", scaledBy: 2,    // ×100, truncated
                                into: 8, found: 9)             // explicit dst + "found" reg
-    let fv = board.json.float(body, "regularMarketPrice")     // -> FloatOperand
+    let fv = board.json.getFloat(body, "regularMarketPrice")     // -> FloatOperand
 
     // Whole-body substring test (→ BoolOperand 0/1):
     let raw    = board.json.bodyContains(body, "\"halted\":true")
 
     // Shape checks before extracting:
-    let kind = board.json.type(body, "result[0]")    // -> NumberOperand (TaskJSONValueType raw)
+    let kind = board.json.getType(body, "result[0]")    // -> NumberOperand (TaskJSONValueType raw)
     board.ifTrue(kind, .equal, .number(TaskJSONValueType.number.rawValue)) { _ in /* it's a number */ }
-    let span = board.json.size(body, "result")       // byte length of the value span
+    let span = board.json.getSize(body, "result")       // byte length of the value span
 
     // String *values*: navigate with getString, then use board.string (next section).
     let currency = board.json.getString(body, "currency")    // -> StringHandle
@@ -556,32 +557,8 @@ try await client.uploadTask(id: 6) { board in
 //   .missing 0  .object 1  .array 2  .string 3  .number 4  .bool 5  .null 6
 ```
 
-### Strings — `board.json.getString` + `board.string`
-
-Navigate to a **string value** with `board.json.getString(body, "path")` — it captures that
-string's content (unquoted) into a snapshot slot and hands back a `StringHandle` — then
-inspect it with `board.string.*`:
-
-```swift
-try await client.uploadTask(id: 7) { board in
-    let r = board.httpGet("https://example.com/status")   // {"msg":"42 ready"}
-    let s = board.json.getString(r.body, "msg")           // StringHandle for "42 ready"
-
-    let len  = board.string.length(s)                     // -> NumberOperand (byte length)
-    let ok   = board.string.contains(s, "ready")          // -> BoolOperand
-    let same = board.string.equals(s, "42 ready")         // -> BoolOperand
-    let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
-    let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
-
-    board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
-    board.string.free(s)                                  // release the slot when done
-    _ = (len, same, at, n)
-}
-```
-
-`getString` reads the **live** body, so call it right after the `httpGet`; it uses one of the
-2 snapshot slots (release it with `board.string.free`). Backed by firmware op `0x2C` (the
-content copy) plus `0x28`–`0x2B` / `0x18` for the `board.string` ops.
+For **string values**, navigate with `board.json.getString` → a `StringHandle`, then use the
+`board.string` ops — see §20.
 
 ---
 
@@ -599,8 +576,8 @@ try await client.uploadTask(id: 7) { board in
 
     let b = board.httpGet(urlB)                        // a's *live* body would now be stale
 
-    let aVal = board.json.number(a.body, "price")      // from A (snapshot — still valid)
-    let bVal = board.json.number(b.body, "price")      // from B (live)
+    let aVal = board.json.getNumber(a.body, "price")      // from A (snapshot — still valid)
+    let bVal = board.json.getNumber(b.body, "price")      // from B (live)
     board.ifTrue(bVal, .greaterThan, aVal) { $0.digitalWrite(pin: 2, high: true) }
 
     board.json.free(a.body)                            // release the snapshot slot (2 total)
@@ -613,7 +590,7 @@ try await client.uploadTask(id: 7) { board in
 // owned snapshot is always valid. Under the hood: REQUEST_COUNT read + CMP vs captured gen.
 try await client.uploadTask(id: 8) { board in
     let c = board.httpGet(urlC)
-    let price = board.json.number(c.body, "price")
+    let price = board.json.getNumber(c.body, "price")
     board.ifTrue(c.body.isValid()) {                   // only trust the read if still fresh
         $0.ifTrue(price, .greaterThan, .number(100)) { $0.digitalWrite(pin: 2, high: true) }
     }
@@ -622,7 +599,47 @@ try await client.uploadTask(id: 8) { board in
 
 ---
 
-## 20. Custom transport
+## 20. Strings — `board.string`
+
+A **`StringHandle`** feeds the `board.string` ops. Get one two ways:
+
+- **From JSON** — `board.json.getString(body, "path")` captures a string value's content
+  (unquoted) into a snapshot slot (§18). Reads the **live** body, so call it right after the
+  `httpGet`.
+- **Standalone** — `StringHandle("literal", on: board)` loads a literal straight into a slot,
+  no HTTP needed.
+
+Either way the ops are identical:
+
+```swift
+try await client.uploadTask(id: 9) { board in
+    // From a JSON field:
+    let r = board.httpGet("https://example.com/status")   // {"msg":"42 ready"}
+    let s = board.json.getString(r.body, "msg")           // StringHandle for "42 ready"
+
+    let len  = board.string.length(s)                     // -> NumberOperand (byte length)
+    let ok   = board.string.contains(s, "ready")          // -> BoolOperand
+    let same = board.string.equals(s, "42 ready")         // -> BoolOperand
+    let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
+    let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
+    board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
+    board.string.free(s)                                  // release the slot when done
+    _ = (len, same, at, n)
+
+    // Standalone literal — no HTTP:
+    let mode = StringHandle("on", on: board)
+    board.ifTrue(board.string.equals(mode, "on")) { $0.digitalWrite(pin: 4, high: true) }
+    board.string.free(mode)
+}
+```
+
+Both kinds live in snapshot slots — there are **5** (`0`–`4`), auto-allocated and released with
+`board.string.free`. Backed by firmware ops `0x2C` (getString) / `0x2D` (standalone literal) to
+fill a slot, then `0x28`–`0x2B` / `0x18` for the ops. (`contains` reuses `0x18`.)
+
+---
+
+## 21. Custom transport
 
 Conform to `FirmataTransport` to drive the client over anything (serial, raw TCP, a mock):
 
@@ -669,7 +686,7 @@ await client.connect()
 
 ---
 
-## 21. Type reference
+## 22. Type reference
 
 ```swift
 // ── Pin modes ───────────────────────────────────────────────────────────────
@@ -738,7 +755,7 @@ enum TaskResultStatus:   Int32  { case ok, notFound, stale, typeMismatch, tooBig
 > `analogRead(channel:)` instead return an **operand** (a register) for use in on-device
 > logic, because a task has no host to hand a value back to.
 
-## 22. Wi-Fi provisioning (encrypted, over BLE)
+## 23. Wi-Fi provisioning (encrypted, over BLE)
 
 Hand the board its Wi-Fi credentials at runtime — typically over **BLE**, before Wi-Fi is up — so a prebuilt firmware (placeholder creds) can join *your* network with no rebuild. The handshake is an ephemeral **X25519 ECDH → HKDF-SHA256 → AES-256-GCM**, so the password is never sent in the clear (no BLE pairing required).
 
