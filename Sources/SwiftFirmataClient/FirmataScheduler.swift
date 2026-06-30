@@ -138,6 +138,21 @@ public final class FirmataTaskRecorder {
         bytes += [Cmd.analogMessage | (channel.number & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
     }
 
+    /// Record an **extended** analog write — PWM on pins ≥ 16, or values wider than the
+    /// 14-bit standard analog message (e.g. servo microseconds). ``analogWrite(channel:value:)``
+    /// only addresses channels 0–15; this addresses any pin. The scheduler replays it through
+    /// the device's Firmata parser, so the board handles it exactly like a live one.
+    /// - Parameters:
+    ///   - pin: The pin to drive — `.pin(25)`.
+    ///   - value: The value, sent as variable-length 7-bit chunks (non-negative).
+    public func extendedAnalogWrite(pin: TaskPin, value: Int32) {
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.extendedAnalog, pin.number]
+        var v = value
+        repeat { m.append(UInt8(v & 0x7F)); v >>= 7 } while v != 0
+        m.append(Cmd.endSysEx)
+        bytes += m
+    }
+
     /// Record a pause — the device waits this long before the next recorded action.
     /// A `delay` as the **final** message makes the whole task loop with that period
     /// (which is what ``FirmataClient/uploadTask(id:startDelay:repeatEvery:_:)``'s
@@ -178,6 +193,40 @@ public final class FirmataTaskRecorder {
         for b in data { m.append(b & 0x7F); m.append((b >> 7) & 0x01) }
         m.append(Cmd.endSysEx)
         bytes += m
+    }
+
+    /// Record an **I²C register read into a register** (non-standard extension) — the device
+    /// writes `registerAddress`, reads `count` (1–4) bytes, and stores them **big-endian** in
+    /// `R[dst]`, so a task can act on an I²C sensor with no host connected. The reply is
+    /// consumed on-device (not sent to a host) — unlike the live ``FirmataClient/i2cReadOnce``.
+    /// - Parameters:
+    ///   - address: 7-bit I²C device address.
+    ///   - registerAddress: the peripheral register to read (a sub-address inside the device,
+    ///     **not** an on-device logic register).
+    ///   - count: how many bytes to read (1–4), packed MSB-first into the result.
+    ///   - into: destination register; auto-allocated (R15↓) if omitted.
+    @discardableResult
+    public func i2cRead(address: UInt16, registerAddress: UInt16, count: UInt8 = 1,
+                        into: TaskNumberRegister? = nil) -> TaskNumber {
+        let dst = into ?? allocateRegister()
+        let c = min(max(count, 1), 4)
+        emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extI2CRead,
+              UInt8(address & 0x7F),
+              UInt8(registerAddress & 0x7F), UInt8((registerAddress >> 7) & 0x7F),
+              c, dst.index & 0x0F, Cmd.endSysEx])
+        return dst
+    }
+
+    /// Record sending a **device string to a connected host** (non-standard extension) — while
+    /// the task runs, the board emits a standard `STRING_DATA` to its master (TCP or BLE),
+    /// arriving as ``FirmataMessage/stringData(_:)``. A no-op if no host is connected.
+    /// (Note: a string passed to the device via ``FirmataClient/sendString(_:)`` is only logged
+    /// to the board's serial console; this is the reverse, board → host, direction.)
+    public func sendString(_ s: String) {
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extEmitString]
+        appendLengthPrefixed(&m, s)
+        m.append(Cmd.endSysEx)
+        emit(m)
     }
 
     // MARK: NON-STANDARD logic extension (see NONSTANDARD.md)

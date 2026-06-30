@@ -357,14 +357,26 @@ try await client.uploadTask(id: 1) { board in
     board.digitalWrite(pin: .pin(2), high: true)
     board.writeDigitalPort(0, pinMask: 0xFF)
     board.analogWrite(channel: .channel(3), value: 200)
+    board.extendedAnalogWrite(pin: .pin(25), value: 1500)  // PWM on pins ≥16 / wide values
     board.delay(.milliseconds(1000))                       // the board waits here while running
 
     // I2C from a task (drive an OLED etc. with no host connected):
     board.configureI2C(delay: .microseconds(0))       // begin the bus (once)
     board.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
-    // (no i2c reads in a task — their reply would have no host to receive it)
+
+    // I2C READ into a register — act on a sensor with nobody connected (non-standard).
+    // Reads `count` (1–4) bytes after writing the register, packed big-endian into R[dst].
+    let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)  // -> TaskNumber
+    board.ifTrue(temp, .greaterThan, .number(2000)) {
+        $0.sendString("too hot")                      // board -> host STRING_DATA (telemetry)
+    }
 }
 ```
+
+> `board.sendString(_:)` makes the **board send a string to a connected host** (arrives as
+> `.stringData` on `client.messages`) — the reverse of `client.sendString(_:)`, which only
+> logs to the board's serial console. Both `i2cRead` and `sendString` are non-standard ops:
+> they need this project's firmware (≥ 2.6.0); a standard board ignores them.
 
 ---
 
