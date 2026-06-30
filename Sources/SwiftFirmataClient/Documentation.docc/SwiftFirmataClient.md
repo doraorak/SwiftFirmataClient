@@ -75,15 +75,15 @@ let raw    = try await client.analogRead(channel: 0)      // UInt16
 
 The standard **Firmata Scheduler** extension lets you upload a timed sequence of
 commands that the board runs on its own — it keeps running after you disconnect.
-Use ``FirmataClient/uploadTask(id:startDelayMs:repeatEveryMs:_:)`` with a
+Use ``FirmataClient/uploadTask(id:startDelay:repeatEvery:_:)`` with a
 ``FirmataTaskRecorder``:
 
 ```swift
 // Blink pin 2 forever, 400 ms on / 400 ms off — survives disconnect.
-try await client.uploadTask(id: 2, repeatEveryMs: 400) { t in
+try await client.uploadTask(id: 2, repeatEvery: .milliseconds(400)) { t in
     t.setPinMode(2, mode: .output)
     t.digitalWrite(pin: 2, high: true)
-    t.delay(ms: 400)
+    t.delay(.milliseconds(400))
     t.digitalWrite(pin: 2, high: false)
 }
 // ...later:
@@ -112,7 +112,7 @@ sequence. The device has **16 global Int32 registers**; you load values into the
 
 ```swift
 // A night-light running entirely on the board, with nobody connected.
-try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { t in
     t.setPinMode(2, mode: .output)
     t.analogRead(into: 0, channel: 0)                 // R0 = analog A0
     t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
@@ -123,7 +123,7 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
 
 Operands are `.reg(0...15)` or `.number(value)`; comparisons are `==`, `!=`, `<`,
 `>`, `<=`, `>=`. Branches are forward-only (no jumps/loops), so a task can decide
-but can never hang the board; looping stays via `repeatEveryMs`.
+but can never hang the board; looping stays via `repeatEvery`.
 
 ### One client, one connection
 

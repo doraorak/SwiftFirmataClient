@@ -189,7 +189,7 @@ try await client.reportAnalogChannel(0, enable: false)
 try await client.systemReset()
 
 // Change how often analog channels are sampled (default ~19 ms on stock firmware).
-try await client.setSamplingInterval(milliseconds: 100)
+try await client.setSamplingInterval(.milliseconds(100))
 
 // Send a string to the device (surfaces in the firmware's string handler).
 try await client.sendString("hello board")
@@ -228,7 +228,7 @@ print("pin \(s.pin) mode=\(s.mode) value=\(s.value)")
 ```swift
 // Configure once before any I2C traffic. The optional delay sits between a register
 // write and the following read.
-try await client.configureI2C(delayMicroseconds: 0)
+try await client.configureI2C(delay: .microseconds(0))
 
 // Write bytes (7-bit address here; pass is10Bit: true for 10-bit addressing).
 // Example: SSD1306 OLED at 0x3C — control byte 0x00 (command), then 0xAE (display off).
@@ -284,10 +284,10 @@ closure, and one `await uploadTask(...)` ships the whole program.
 
 ```swift
 // Blink pin 2 every 500 ms, entirely on the board — survives disconnect.
-try await client.uploadTask(id: 2, startDelayMs: 0, repeatEveryMs: 500) { board in
+try await client.uploadTask(id: 2, startDelay: .zero, repeatEvery: .milliseconds(500)) { board in
     board.setPinMode(2, mode: .output)   // recorded, not sent now
     board.digitalWrite(pin: 2, high: true)
-    board.delay(ms: 500)                 // the BOARD waits here while running
+    board.delay(.milliseconds(500))                 // the BOARD waits here while running
     board.digitalWrite(pin: 2, high: false)
 }
 await client.disconnect()                // the LED keeps blinking
@@ -302,8 +302,8 @@ try await client.uploadTask(id: 5) { board in
 
 // Parameters:
 //   id            0–127. Reusing an id REPLACES that task (e.g. use the pin number).
-//   startDelayMs  delay before the first run (0 = immediately).
-//   repeatEveryMs non-nil → loop forever with this gap; nil → run once.
+//   startDelay  delay before the first run (0 = immediately).
+//   repeatEvery non-nil → loop forever with this gap; nil → run once.
 ```
 
 ---
@@ -346,10 +346,10 @@ try await client.uploadTask(id: 1) { t in
     t.digitalWrite(pin: 2, high: true)
     t.writeDigitalPort(0, pinMask: 0xFF)
     t.analogWrite(channel: 3, value: 200)
-    t.delay(ms: 1000)                       // the board waits here while running
+    t.delay(.milliseconds(1000))                       // the board waits here while running
 
     // I2C from a task (drive an OLED etc. with no host connected):
-    t.i2cConfig(delayMicroseconds: 0)       // begin the bus (once)
+    t.i2cConfig(delay: .microseconds(0))       // begin the bus (once)
     t.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
     // (no i2c reads in a task — their reply would have no host to receive it)
 }
@@ -374,8 +374,8 @@ try await client.uploadTask(id: 1) { t in
 
     // Reads that RETURN an auto-allocated register as a typed operand, so you can drop
     // them straight into a comparison. Auto registers descend R15 → R0.
-    let pressed: BoolOperand   = t.digitalRead(pin: 7)     // -> BoolOperand
-    let light:   NumberOperand = t.analogRead(channel: 0)  // -> NumberOperand
+    let pressed: TaskBool   = t.digitalRead(pin: 7)     // -> TaskBool
+    let light:   TaskNumber = t.analogRead(channel: 0)  // -> TaskNumber
     t.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // see §14
     _ = light
 }
@@ -385,28 +385,28 @@ try await client.uploadTask(id: 1) { t in
 
 ## 13. The operand model (typed)
 
-Everything the logic ops consume/return is a `TaskOperand`. Concrete subclasses
-carry the *static type* so the API tells you what a value is:
+Everything the logic ops consume/return is a `TaskOperand`. Concrete conforming
+types carry the *static type* so the API tells you what a value is:
 
 | Type | Made by | Meaning |
 |---|---|---|
-| `NumberOperand` | `.number(_)`, `NumberOperand(_)`, `.reg(_)`, arithmetic, `json.number/type/size`, `string.length/indexOf/toInt` | Int32 value / register |
-| `FloatOperand` | `.float(_)`, `FloatOperand(_)`, `.freg(_)`, float arithmetic, `json.float` | Float value / register |
-| `BoolOperand` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.bodyContains`, `string.equals/contains`, `isValid()` | 0/1 result |
-| `JSONHandle` | `response.body`, `snapshotJson` | a response-body handle (not a comparable value) |
-| `StringHandle` | `json.getString`, `string.createString` | a captured string value, for the `board.string` ops |
+| `TaskNumber` | `.number(_)`, `.reg(_)`, arithmetic, `json.getNumber/getType/getSize`, `string.length/indexOf/toInt` | Int32 value / register |
+| `TaskFloat` | `.float(_)`, `.freg(_)`, float arithmetic, `json.getFloat` | Float value / register |
+| `TaskBool` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.bodyContains`, `string.equals/contains`, `isValid()` | 0/1 result |
+| `TaskJSON` | `response.body`, `board.json.snapshot` | a response-body handle (not a comparable value) |
+| `TaskString` | `json.getString`, `string.createString` | a captured string value, for the `board.string` ops |
 
 ```swift
 // Literals — use these almost everywhere:
-let a  = TaskOperand.number(200)   // Int32 literal     (or: NumberOperand(200))
-let f  = TaskOperand.float(1.5)    // Float literal     (or: FloatOperand(1.5))
-let on = TaskOperand.bool(true)    // boolean literal   (or: BoolOperand(true))
+let a  = TaskOperand.number(200)   // Int32 literal     (or: TaskNumberLiteral(rawValue: 200))
+let f  = TaskOperand.float(1.5)    // Float literal     (or: TaskFloatLiteral(rawValue: 1.5))
+let on = TaskOperand.bool(true)    // boolean literal   (or: TaskBoolLiteral(rawValue: true))
 
 // Naming a register explicitly (advanced; the auto-allocator usually handles this):
 let r3 = TaskOperand.reg(3)        // int register R3 as an operand
 let f0 = TaskOperand.freg(0)       // float register F0 as an operand
 
-// Because subclasses ARE TaskOperands, a typed result flows into any op:
+// Because these types all conform to TaskOperand, a typed result flows into any op:
 //   t.ifTrue(t.analogRead(channel: 0), .greaterThan, .number(512)) { … }
 // If either side of a comparison/op is a float, the device promotes to float.
 ```
@@ -429,8 +429,8 @@ try await client.uploadTask(id: 1) { t in
         then:   { $0.digitalWrite(pin: 2, high: true) },     // runs if R0 > 512
         elseDo: { $0.digitalWrite(pin: 2, high: false) })    // optional else
 
-    // (b) Branch directly on a BoolOperand (a predicate / digitalRead / compare / isValid):
-    let pressed = t.digitalRead(pin: 7)             // -> BoolOperand
+    // (b) Branch directly on a TaskBool (a predicate / digitalRead / compare / isValid):
+    let pressed = t.digitalRead(pin: 7)             // -> TaskBool
     t.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // "if true (non-zero)"
 }
 ```
@@ -440,7 +440,7 @@ try await client.uploadTask(id: 1) { t in
 // and branch on it several times (instead of repeating the comparison inline).
 // Backed by the firmware CMP op (0x27).
 try await client.uploadTask(id: 1) { t in
-    let warm = t.compare(t.analogRead(channel: 0), .greaterThan, .number(2000)) // -> BoolOperand
+    let warm = t.compare(t.analogRead(channel: 0), .greaterThan, .number(2000)) // -> TaskBool
     t.ifTrue(warm) { $0.digitalWrite(pin: 2, high: true) }
     t.ifTrue(warm) { $0.digitalWrite(pin: 4, high: true) }   // reuse, no recompute
     // compare(_:_:_:into:) — pass `into:` to choose the result register yourself.
@@ -453,7 +453,7 @@ try await client.uploadTask(id: 1) { t in
 
 ```swift
 try await client.uploadTask(id: 1) { t in
-    // Integer ops → NumberOperand (result register auto-allocated, or pass into:).
+    // Integer ops → TaskNumber (result register auto-allocated, or pass into:).
     // 64-bit intermediates avoid overflow; ÷ and % by zero yield 0.
     let sum  = t.add(.reg(0), .number(5))           // R? = R0 + 5
     let diff = t.subtract(sum, .number(1))
@@ -462,7 +462,7 @@ try await client.uploadTask(id: 1) { t in
     let rem  = t.modulo(.reg(0), .number(10))
     _ = (diff, quot, rem)
 
-    // Float ops → FloatOperand. 8 float registers F0–F7. ints promote to float.
+    // Float ops → TaskFloat. 8 float registers F0–F7. ints promote to float.
     t.setFloatRegister(0, to: 100.0)                // F0 = 100.0
     let scaled = t.multiplyFloat(.freg(0), .float(1.5))   // F? = F0 * 1.5
     let added  = t.addFloat(scaled, .float(0.25))
@@ -479,7 +479,7 @@ try await client.uploadTask(id: 1) { t in
 ```swift
 try await client.uploadTask(id: 1) { t in
     // Read free heap + largest contiguous block into registers, to gate an allocation
-    // (e.g. a snapshot) on available memory. Returns a tuple of NumberOperands.
+    // (e.g. a snapshot) on available memory. Returns a tuple of TaskNumbers.
     let mem = t.heapStats()                          // (free:, largest:)  auto-allocated
     t.ifTrue(mem.free, .greaterThan, .number(8192)) { _ in
         // …safe to do something memory-hungry…
@@ -493,12 +493,12 @@ try await client.uploadTask(id: 1) { t in
 ## 17. Internet inside a task
 
 `httpGet`/`httpPost` recorded into a task return a **`TaskHTTPResponse`**: branch on
-`.status`, and pass `.body` (a `JSONHandle`) to the `board.json` inspection ops (§18).
+`.status`, and pass `.body` (a `TaskJSON`) to the `board.json` inspection ops (§18).
 The full body is retained on the device for inspection — no host needed.
 
 ```swift
 // Every minute: green LED if SPY is up on the day, red if down — no host connected.
-try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
+try await client.uploadTask(id: 5, repeatEvery: .milliseconds(60_000)) { board in
     board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
 
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
@@ -528,25 +528,25 @@ a typed result register. `path` is dotted/indexed:
 ```swift
 try await client.uploadTask(id: 6) { board in
     let r = board.httpGet("https://example.com/data")
-    let body = r.body                                // JSONHandle handle (§19)
+    let body = r.body                                // TaskJSON handle (§19)
 
     // Numbers:
-    let n  = board.json.getNumber(body, "count")                 // -> NumberOperand
+    let n  = board.json.getNumber(body, "count")                 // -> TaskNumber
     let n2 = board.json.getNumber(body, "price", scaledBy: 2,    // ×100, truncated
                                into: 8, found: 9)             // explicit dst + "found" reg
-    let fv = board.json.getFloat(body, "regularMarketPrice")     // -> FloatOperand
+    let fv = board.json.getFloat(body, "regularMarketPrice")     // -> TaskFloat
 
-    // Whole-body substring test (→ BoolOperand 0/1):
+    // Whole-body substring test (→ TaskBool 0/1):
     let raw    = board.json.bodyContains(body, "\"halted\":true")
 
     // Shape checks before extracting:
-    let kind = board.json.getType(body, "result[0]")    // -> NumberOperand (TaskJSONValueType raw)
+    let kind = board.json.getType(body, "result[0]")    // -> TaskNumber (TaskJSONValueType raw)
     board.ifTrue(kind, .equal, .number(TaskJSONValueType.number.rawValue)) { _ in /* it's a number */ }
     let span = board.json.getSize(body, "result")       // byte length of the value span
 
     // String *values*: navigate with getString, then use board.string (next section).
-    let currency = board.json.getString(body, "currency")    // -> StringHandle
-    let isUSD    = board.string.equals(currency, "USD")      // -> BoolOperand
+    let currency = board.json.getString(body, "currency")    // -> TaskString
+    let isUSD    = board.string.equals(currency, "USD")      // -> TaskBool
 
     _ = (n, n2, fv, raw, kind, span, currency, isUSD)
 }
@@ -557,7 +557,7 @@ try await client.uploadTask(id: 6) { board in
 //   .missing 0  .object 1  .array 2  .string 3  .number 4  .bool 5  .null 6
 ```
 
-For **string values**, navigate with `board.json.getString` → a `StringHandle`, then use the
+For **string values**, navigate with `board.json.getString` → a `TaskString`, then use the
 `board.string` ops — see §20.
 
 ---
@@ -570,7 +570,7 @@ a *later* request overwrites. Two tools manage that:
 ```swift
 try await client.uploadTask(id: 7) { board in
     let a = board.httpGet(urlA)
-    board.snapshotJson(a.body)                       // IN-PLACE: a.body now OWNS a slot
+    board.json.snapshot(a.body)                       // IN-PLACE: a.body now OWNS a slot
     //   ^ upgrades the handle so it survives later requests; subsequent json ops on
     //     a.body read the persisted copy. (No return value — it mutates a.body.)
 
@@ -580,12 +580,12 @@ try await client.uploadTask(id: 7) { board in
     let bVal = board.json.getNumber(b.body, "price")      // from B (live)
     board.ifTrue(bVal, .greaterThan, aVal) { $0.digitalWrite(pin: 2, high: true) }
 
-    board.freeJson(a.body)                            // release the snapshot slot (2 total)
+    board.json.free(a.body)                            // release the snapshot slot (2 total)
 }
 ```
 
 ```swift
-// isValid(): record a BoolOperand that is true while a BORROWED handle's live body is
+// isValid(): record a TaskBool that is true while a BORROWED handle's live body is
 // still the one captured at request time (false once a newer request replaces it). An
 // owned snapshot is always valid. Under the hood: REQUEST_COUNT read + CMP vs captured gen.
 try await client.uploadTask(id: 8) { board in
@@ -601,10 +601,10 @@ try await client.uploadTask(id: 8) { board in
 
 ## 20. Strings — `board.string`
 
-A **`StringHandle`** feeds the `board.string` ops. Get one two ways:
+A **`TaskString`** feeds the `board.string` ops. Get one two ways:
 
 - **From JSON** — `board.json.getString(body, "path")` captures a string value's content
-  (unquoted) into a ``StringSlot`` (§18). Reads the **live** body, so call it right after the
+  (unquoted) into a ``TaskStringSlot`` (§18). Reads the **live** body, so call it right after the
   `httpGet`.
 - **Standalone** — `board.string.createString("literal")` loads a literal straight into a slot,
   no HTTP needed.
@@ -615,30 +615,30 @@ Either way the ops are identical:
 try await client.uploadTask(id: 9) { board in
     // From a JSON field:
     let r = board.httpGet("https://example.com/status")   // {"msg":"42 ready"}
-    let s = board.json.getString(r.body, "msg")           // StringHandle for "42 ready"
+    let s = board.json.getString(r.body, "msg")           // TaskString for "42 ready"
 
-    let len  = board.string.length(s)                     // -> NumberOperand (byte length)
-    let ok   = board.string.contains(s, "ready")          // -> BoolOperand
-    let same = board.string.equals(s, "42 ready")         // -> BoolOperand
-    let at   = board.string.indexOf(s, "ready")           // -> NumberOperand (index, or -1)
-    let n    = board.string.toInt(s, found: .reg(9))      // -> NumberOperand (leading int) + found flag
+    let len  = board.string.length(s)                     // -> TaskNumber (byte length)
+    let ok   = board.string.contains(s, "ready")          // -> TaskBool
+    let same = board.string.equals(s, "42 ready")         // -> TaskBool
+    let at   = board.string.indexOf(s, "ready")           // -> TaskNumber (index, or -1)
+    let n    = board.string.toInt(s, found: .reg(9))      // -> TaskNumber (leading int) + found flag
     board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
-    board.freeString(s)                                   // release the slot when done
+    board.string.free(s)                                   // release the slot when done
     _ = (len, same, at, n)
 
     // Standalone literal — no HTTP:
     let mode = board.string.createString("on")
     board.ifTrue(board.string.equals(mode, "on")) { $0.digitalWrite(pin: 4, high: true) }
-    mode.changeSlot(StringSlot(9))                        // copy into a specific slot, rebind
-    board.freeString(mode)
+    mode.changeSlot(TaskStringSlot(9))                        // copy into a specific slot, rebind
+    board.string.free(mode)
 }
 ```
 
-**Slots are typed and separate**: `JSONSlot` (2: `0`–`1`) for `board.snapshotJson`, and
-`StringSlot` (10: `0`–`9`) for strings — both auto-allocated, passed explicitly as
-`into: JSONSlot(1)` / `into: StringSlot(3)`, and released with `board.freeJson` / `board.freeString`.
-`board.snapshotString(s)` copies a string into a fresh slot (returns a new handle);
-`s.changeSlot(_:)` moves a string into a given slot. Backed by firmware ops `0x2C` (getString) /
+**Slots are typed and separate**: `TaskJSONSlot` (2: `0`–`1`) for `board.json.snapshot`, and
+`TaskStringSlot` (10: `0`–`9`) for strings — both auto-allocated, passed explicitly as
+`into: TaskJSONSlot(1)` / `into: TaskStringSlot(3)`, and released with `board.json.free` / `board.string.free`.
+`s.changeSlot(TaskStringSlot(n))` copies a string into a given slot (and rebinds the handle).
+Backed by firmware ops `0x2C` (getString) /
 `0x2D` (createString) / `0x2E` (copy-slot), then `0x28`–`0x2B` / `0x18` for the ops.
 
 ---
@@ -740,14 +740,15 @@ enum FirmataError: Error     { case transportClosed, invalidData, noResponse, wi
 // ── Scheduler / logic extension ──────────────────────────────────────────────
 struct SchedulerTask { let id: UInt8; let timeMs: UInt32; let length, position: Int; let data: [UInt8] }
 
-class TaskOperand { /* base */ }
-final class NumberOperand: TaskOperand {}   // .number(_) / NumberOperand(_) / .reg(_)
-final class FloatOperand:  TaskOperand {}   // .float(_)  / FloatOperand(_)  / .freg(_)
-final class BoolOperand:   TaskOperand {}   // .bool(_)   / compare / predicates / isValid()
-final class JSONHandle:   TaskOperand {    // a response-body handle
-    func isValid() -> BoolOperand
+protocol TaskOperand { /* base */ }
+protocol TaskNumber: TaskOperand {}      // .number(_) / .reg(_)  (TaskNumberLiteral / TaskNumberRegister)
+protocol TaskFloat:  TaskOperand {}      // .float(_)  / .freg(_) (TaskFloatLiteral / TaskFloatRegister)
+protocol TaskBool:   TaskOperand {}      // .bool(_)   / compare / predicates / isValid()
+final class TaskJSON {                    // a response-body handle (NOT an operand)
+    func isValid() -> TaskBool
 }
-struct TaskHTTPResponse { let status: NumberOperand; let body: JSONHandle }
+final class TaskString { /* a captured string, for board.string ops */ }
+struct TaskHTTPResponse { let status: TaskNumberRegister; let body: TaskJSON }
 
 enum TaskComparison: UInt8 { case equal, notEqual, lessThan, greaterThan, lessOrEqual, greaterOrEqual }
 enum TaskJSONValueType:  Int32  { case missing, object, array, string, number, bool, null }      // 0…6

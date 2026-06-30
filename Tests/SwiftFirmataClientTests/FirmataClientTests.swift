@@ -103,7 +103,7 @@ struct FirmataClientTests {
     @Test func setSamplingInterval() async throws {
         let (client, transport) = await makeClient()
         // 500 ms => LSB = 500 & 0x7F = 0x74, MSB = 500 >> 7 = 0x03
-        try await client.setSamplingInterval(milliseconds: 500)
+        try await client.setSamplingInterval(.milliseconds(500))
         #expect(transport.lastSent == [0xF0, 0x7A, 0x74, 0x03, 0xF7])
     }
 
@@ -175,7 +175,7 @@ struct FirmataClientTests {
 
     @Test func i2cConfigSent() async throws {
         let (client, transport) = await makeClient()
-        try await client.configureI2C(delayMicroseconds: 100)
+        try await client.configureI2C(delay: .microseconds(100))
         // 100 => LSB = 100, MSB = 0
         #expect(transport.lastSent == [0xF0, 0x78, 100, 0, 0xF7])
     }

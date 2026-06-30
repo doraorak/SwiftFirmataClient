@@ -69,11 +69,11 @@ struct SchedulerLogicTests {
             0x01, 0x00, 0x00, 0x00, 0x00, 0x00,   //   b = const 0
             0xF7,
         ])
-        #expect(isUp.register == 5)
+        #expect(isUp.index == 5)
     }
 
-    @Test func ifTrueBoolOperandLowersToNotEqualZero() {
-        // The BoolOperand overload is sugar for `ifTrue(cond, .notEqual, .number(0))`.
+    @Test func ifTrueTaskBoolLowersToNotEqualZero() {
+        // The TaskBool overload is sugar for `ifTrue(cond, .notEqual, .number(0))`.
         var explicit = FirmataTaskRecorder()
         explicit.ifTrue(.reg(3), .notEqual, .number(0),
             then:   { $0.digitalWrite(pin: 2, high: true) },
@@ -100,5 +100,22 @@ struct SchedulerLogicTests {
         let skipLo = b[b.firstIndex(of: 0xF7)! - 2]
         let skipHi = b[b.firstIndex(of: 0xF7)! - 1]
         #expect(Int(skipLo) | (Int(skipHi) << 7) == 19)
+    }
+
+    // Registers/slots are global on the device. A nested branch must continue the
+    // parent's auto-allocation cursor (not reset to R15), so it never reuses a
+    // register the outer scope is still holding — and the outer scope resumes past
+    // whatever the branch allocated.
+    @Test func nestedBranchAllocationDoesNotClobberOuter() {
+        let r = FirmataTaskRecorder()
+        let outer = r.analogRead(channel: 0)            // -> R15
+        var inner: TaskNumberRegister?
+        r.ifTrue(outer, .greaterThan, .number(100)) {
+            inner = $0.analogRead(channel: 1)           // continues the cursor; must not reuse R15
+        }
+        let after = r.analogRead(channel: 2)            // resumes past the branch's allocation
+        #expect(outer.index == 15)
+        #expect(inner?.index == 14)                     // distinct from outer (was 15 before the fix)
+        #expect(after.index == 13)
     }
 }
