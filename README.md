@@ -141,10 +141,10 @@ Scheduler, SysEx `0x7B`). Build a task with the recorder, upload it, and leave:
 ```swift
 // Blink pin 2 every 250 ms — forever, with no client connected.
 try await client.uploadTask(id: 1, repeatEvery: .milliseconds(250)) { board in
-    board.setPinMode(2, mode: .output)
-    board.digitalWrite(pin: 2, high: true)
+    board.setPinMode(.pin(2), mode: .output)
+    board.digitalWrite(pin: .pin(2), high: true)
     board.delay(.milliseconds(250))
-    board.digitalWrite(pin: 2, high: false)
+    board.digitalWrite(pin: .pin(2), high: false)
 }
 await client.disconnect()          // the board keeps blinking
 ```
@@ -172,8 +172,8 @@ branch with `ifTrue`:
 ```swift
 // A night-light running entirely on the board, no client connected.
 try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
-    board.setPinMode(2, mode: .output)
-    board.analogRead(into: .reg(0), channel: 0)           // R0 = analog A0
+    board.setPinMode(.pin(2), mode: .output)
+    board.analogRead(into: .reg(0), channel: .channel(0))           // R0 = analog A0
     board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
@@ -202,7 +202,7 @@ certificate validation** (a browser-style root-CA bundle).
 ```swift
 // Every minute: green LED if SPY is up on the day, red if it's down — no host.
 try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
-    board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
+    board.setPinMode(.pin(2), mode: .output); board.setPinMode(.pin(4), mode: .output)
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled (×100):
     //   -0.42  ->  -42 ;  path may be dotted/indexed: "result[0].changePercent"

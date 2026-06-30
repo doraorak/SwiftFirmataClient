@@ -113,7 +113,7 @@ struct InternetActionTests {
 
     @Test func setFloatEncoding() {
         var r = FirmataTaskRecorder()
-        let f = r.setFloatRegister(.freg(2), to: 1.5)
+        let f = r.setFloatRegister(.freg(2), to: .float(1.5))
         #expect(f.index == 2)
         let bits = Float(1.5).bitPattern
         let expected: [UInt8] = [0xF0, 0x7B, 0x7F, 0x1B, 2]
@@ -310,7 +310,7 @@ struct InternetActionTests {
         let h = r.httpGet("http://x", statusInto: .reg(0))
         let pct = r.json.getNumber(h.body, "changePercent", scaledBy: 2)   // dst=15, found=14
         #expect(pct.index == 15)
-        r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: 2, high: true) }
+        r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: .pin(2), high: true) }
         // The next auto-allocated read should be R13 (15 and 14 already taken).
         let nxt = r.json.bodyContains(h.body, "x")
         #expect(nxt.index == 13)

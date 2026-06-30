@@ -81,10 +81,10 @@ Use ``FirmataClient/uploadTask(id:startDelay:repeatEvery:_:)`` with a
 ```swift
 // Blink pin 2 forever, 400 ms on / 400 ms off — survives disconnect.
 try await client.uploadTask(id: 2, repeatEvery: .milliseconds(400)) { board in
-    board.setPinMode(2, mode: .output)
-    board.digitalWrite(pin: 2, high: true)
+    board.setPinMode(.pin(2), mode: .output)
+    board.digitalWrite(pin: .pin(2), high: true)
     board.delay(.milliseconds(400))
-    board.digitalWrite(pin: 2, high: false)
+    board.digitalWrite(pin: .pin(2), high: false)
 }
 // ...later:
 try await client.deleteTask(id: 2)
@@ -113,8 +113,8 @@ sequence. The device has **16 global Int32 registers**; you load values into the
 ```swift
 // A night-light running entirely on the board, with nobody connected.
 try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
-    board.setPinMode(2, mode: .output)
-    board.analogRead(into: .reg(0), channel: 0)                 // R0 = analog A0
+    board.setPinMode(.pin(2), mode: .output)
+    board.analogRead(into: .reg(0), channel: .channel(0))                 // R0 = analog A0
     board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off

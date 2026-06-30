@@ -35,10 +35,10 @@ struct SchedulerTests {
 
     @Test func recorderBuildsLiveByteStream() {
         var r = FirmataTaskRecorder()
-        r.setPinMode(2, mode: .output)
-        r.digitalWrite(pin: 2, high: true)
+        r.setPinMode(.pin(2), mode: .output)
+        r.digitalWrite(pin: .pin(2), high: true)
         r.delay(.milliseconds(1500))
-        r.digitalWrite(pin: 2, high: false)
+        r.digitalWrite(pin: .pin(2), high: false)
         let delayMsg: [UInt8] = [0xF0, 0x7B, 0x03] + encode7BitFirmata(timeBytes(1500)) + [0xF7]
         var expected: [UInt8] = [0xF4, 2, 0x01, 0xF5, 2, 0x01]
         expected += delayMsg
@@ -104,8 +104,8 @@ struct SchedulerTests {
         let (c, t) = await makeClient()
         try await completeUpload(t) {
             try await c.uploadTask(id: 1, startDelay: .zero) { task in
-                task.setPinMode(2, mode: .output)
-                task.digitalWrite(pin: 2, high: true)
+                task.setPinMode(.pin(2), mode: .output)
+                task.digitalWrite(pin: .pin(2), high: true)
             }
         }
         // delete, create(len=6), add, schedule, queryAll (confirmation)
@@ -121,19 +121,19 @@ struct SchedulerTests {
         let (c, t) = await makeClient()
         try await completeUpload(t) {
             try await c.uploadTask(id: 2, repeatEvery: .milliseconds(500)) { task in
-                task.setPinMode(2, mode: .output)
-                task.digitalWrite(pin: 2, high: true)
+                task.setPinMode(.pin(2), mode: .output)
+                task.digitalWrite(pin: .pin(2), high: true)
                 task.delay(.milliseconds(500))
-                task.digitalWrite(pin: 2, high: false)
+                task.digitalWrite(pin: .pin(2), high: false)
             }
         }
         // The reserved length must equal the recorded bytes including BOTH the
         // in-sequence delay and the trailing repeat delay.
         var recorder = FirmataTaskRecorder()
-        recorder.setPinMode(2, mode: .output)
-        recorder.digitalWrite(pin: 2, high: true)
+        recorder.setPinMode(.pin(2), mode: .output)
+        recorder.digitalWrite(pin: .pin(2), high: true)
         recorder.delay(.milliseconds(500))
-        recorder.digitalWrite(pin: 2, high: false)
+        recorder.digitalWrite(pin: .pin(2), high: false)
         recorder.delay(.milliseconds(500))   // trailing -> loop
         let expectedLen = recorder.bytes.count
 

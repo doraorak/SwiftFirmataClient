@@ -108,18 +108,18 @@ public final class FirmataTaskRecorder {
 
     /// Record a pin-mode change (e.g. `.output` before writing it).
     /// - Parameters:
-    ///   - pin: The board pin number.
+    ///   - pin: The board pin — `.pin(13)`.
     ///   - mode: The role the pin should take — see ``PinMode``.
-    public func setPinMode(_ pin: UInt8, mode: PinMode) {
-        bytes += [Cmd.setPinMode, pin, mode.rawValue]
+    public func setPinMode(_ pin: TaskPin, mode: PinMode) {
+        bytes += [Cmd.setPinMode, pin.number, mode.rawValue]
     }
 
     /// Record driving a pin HIGH or LOW (the pin must be in `.output` mode).
     /// - Parameters:
-    ///   - pin: The board pin number to drive.
+    ///   - pin: The board pin to drive — `.pin(2)`.
     ///   - high: `true` for HIGH, `false` for LOW.
-    public func digitalWrite(pin: UInt8, high: Bool) {
-        bytes += [Cmd.setDigitalPinValue, pin, high ? 0x01 : 0x00]
+    public func digitalWrite(pin: TaskPin, high: Bool) {
+        bytes += [Cmd.setDigitalPinValue, pin.number, high ? 0x01 : 0x00]
     }
 
     /// Record writing all eight pins of a port at once (output pins only).
@@ -132,10 +132,10 @@ public final class FirmataTaskRecorder {
 
     /// Record a PWM write to a channel (0-15) in `.pwm` mode.
     /// - Parameters:
-    ///   - channel: The PWM channel (pin number for 0-15).
+    ///   - channel: The PWM channel — `.channel(3)` (the pin number for pins 0-15).
     ///   - value: Duty cycle within the pin's PWM resolution (e.g. `0`-`255`).
-    public func analogWrite(channel: UInt8, value: UInt16) {
-        bytes += [Cmd.analogMessage | (channel & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
+    public func analogWrite(channel: TaskChannel, value: UInt16) {
+        bytes += [Cmd.analogMessage | (channel.index & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
     }
 
     /// Record a pause — the device waits this long before the next recorded action.
@@ -194,22 +194,22 @@ public final class FirmataTaskRecorder {
     /// Record `R[dst] = value` — load a constant into one of the device's 16
     /// global Int32 registers.
     /// - Parameters:
-    ///   - dst: Destination register index, `0`–`15`.
-    ///   - value: The signed 32-bit value to store.
-    public func setRegister(_ dst: TaskNumberRegister, to value: TaskNumberLiteral.RawValue) {
+    ///   - dst: Destination register — `.reg(3)`.
+    ///   - value: The signed 32-bit constant to store — `.number(512)`.
+    public func setRegister(_ dst: TaskNumberRegister, to value: TaskNumberLiteral) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSet, dst.index & 0x0F]
-        bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value)))
+        bytes += encode7BitFirmata(timeBytes(UInt32(bitPattern: value.rawValue)))
         bytes.append(Cmd.endSysEx)
     }
 
     /// Record `register = digitalRead(pin)` (stores `0`/`1`). The pin should be an
-    /// input — record `setPinMode(pin, mode: .input)` earlier in the task.
+    /// input — record `setPinMode(.pin(p), mode: .input)` earlier in the task.
     /// - Parameters:
-    ///   - register: Destination register, `0`–`15`.
-    ///   - pin: The board pin to read.
-    public func digitalRead(into register: TaskBoolRegister, pin: UInt8) {
+    ///   - register: Destination register — `.boolReg(1)`.
+    ///   - pin: The board pin to read — `.pin(7)`.
+    public func digitalRead(into register: TaskBoolRegister, pin: TaskPin) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extDigitalRead,
-                  register.index & 0x0F, pin & 0x7F, Cmd.endSysEx]
+                  register.index & 0x0F, pin.number & 0x7F, Cmd.endSysEx]
     }
 
     /// Record `register = analogRead(channel)` — read an analog input into a register.
@@ -219,11 +219,11 @@ public final class FirmataTaskRecorder {
     ///   board (the mapping comes from ``FirmataClient/queryAnalogMapping()``). So
     ///   `channel: 0` reads whatever pin is wired to A0 — not GPIO 0.
     /// - Parameters:
-    ///   - register: Destination register index, `0`–`15`.
-    ///   - channel: Analog channel (`A0 = 0`, …).
-    public func analogRead(into register: TaskNumberRegister, channel: UInt8) {
+    ///   - register: Destination register — `.reg(2)`.
+    ///   - channel: Analog channel — `.channel(0)` (`A0 = 0`, …).
+    public func analogRead(into register: TaskNumberRegister, channel: TaskChannel) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extAnalogRead,
-                  register.index & 0x0F, channel & 0x0F, Cmd.endSysEx]
+                  register.index & 0x0F, channel.index & 0x0F, Cmd.endSysEx]
     }
 
     /// Record `digitalRead(pin)` into an **auto-allocated** register and return that
@@ -232,17 +232,17 @@ public final class FirmataTaskRecorder {
     /// device when the task runs, and this hands you the register it lands in.)
     ///
     /// ```swift
-    /// let pressed = board.digitalRead(pin: 7)              // -> .reg(n)
+    /// let pressed = board.digitalRead(pin: .pin(7))         // -> .reg(n)
     /// board.ifTrue(pressed, .equal, .number(0),             // active-low button
-    ///     then: { $0.digitalWrite(pin: 2, high: true) })
+    ///     then: { $0.digitalWrite(pin: .pin(2), high: true) })
     /// ```
     ///
     /// Auto-allocated registers cycle `R15 → R0`; for explicit control use
     /// ``digitalRead(into:pin:)``. Read into a local first if you'll reuse it, since
     /// a later auto-read may reuse the same register.
-    /// - Parameter pin: The board pin to read (put it in `.input`/`.inputPullup` first).
+    /// - Parameter pin: The board pin to read — `.pin(7)` (put it in `.input`/`.inputPullup` first).
     /// - Returns: The register operand holding `0`/`1`.
-    public func digitalRead(pin: UInt8) -> TaskBoolRegister {
+    public func digitalRead(pin: TaskPin) -> TaskBoolRegister {
         let r = TaskBoolRegister(allocateRegister())
         digitalRead(into: r, pin: pin)
         return r
@@ -252,9 +252,9 @@ public final class FirmataTaskRecorder {
     /// that register as a ``TaskOperand`` for use in
     /// ``ifTrue(_:_:_:then:elseDo:)``. See ``digitalRead(pin:)`` for the allocation
     /// rules; use ``analogRead(into:channel:)`` to choose the register yourself.
-    /// - Parameter channel: Analog channel index (`A0 = 0`, …), **not** a pin number.
+    /// - Parameter channel: Analog channel — `.channel(0)` (`A0 = 0`, …), **not** a pin number.
     /// - Returns: The register operand holding the reading.
-    public func analogRead(channel: UInt8) -> TaskNumberRegister {
+    public func analogRead(channel: TaskChannel) -> TaskNumberRegister {
         let r = allocateRegister(); analogRead(into: r, channel: channel); return r
     }
 
@@ -529,10 +529,13 @@ public final class FirmataTaskRecorder {
     // MARK: Float registers (8 of them, F0–F7)
 
     /// Record `F[dst] = value`. Returns the float register as a `.freg` operand.
+    /// - Parameters:
+    ///   - dst: Destination float register — `.freg(0)`.
+    ///   - value: The `Float` constant to store — `.float(100.0)`.
     @discardableResult
-    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral.RawValue) -> TaskFloatRegister {
+    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral) -> TaskFloatRegister {
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSetFloat, dst.index & 0x07]
-        m += encode7BitFirmata(timeBytes(value.bitPattern))
+        m += encode7BitFirmata(timeBytes(value.rawValue.bitPattern))
         m.append(Cmd.endSysEx); bytes += m
         return dst
     }
@@ -943,6 +946,24 @@ public extension TaskBoolRegister {
     init(_ numberRegister: TaskNumberRegister) {
         self.init(index: numberRegister.index)
     }
+}
+
+/// A board **pin**, by number — write it as `.pin(13)`. A typed wrapper so the task API
+/// never takes a bare integer where a pin is meant (distinct from a ``TaskChannel``).
+public struct TaskPin: Sendable {
+    public let number: UInt8
+    public init(_ number: UInt8) { self.number = number }
+    /// A pin by number — `.pin(13)`.
+    public static func pin(_ number: UInt8) -> TaskPin { TaskPin(number) }
+}
+
+/// An **analog channel** index (`A0 = 0`, …) — write it as `.channel(0)`. A typed wrapper,
+/// distinct from a ``TaskPin`` (a channel maps to a pin via ``FirmataClient/queryAnalogMapping()``).
+public struct TaskChannel: Sendable {
+    public let index: UInt8
+    public init(_ index: UInt8) { self.index = index }
+    /// An analog channel by index — `.channel(0)`.
+    public static func channel(_ index: UInt8) -> TaskChannel { TaskChannel(index) }
 }
 
 /// One of the device's **JSON snapshot slots** (`0`–`1`) — a typed slot, like a register operand.
