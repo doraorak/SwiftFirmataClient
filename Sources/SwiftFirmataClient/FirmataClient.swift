@@ -80,6 +80,12 @@ public actor FirmataClient {
     private var analogReportingChannels: Set<UInt8> = []
     private var digitalReportingPorts:   Set<UInt8> = []
 
+    // Fire-and-forget timeout tasks for in-flight queries. Tracked so a
+    // ``disconnect()`` cancels them immediately instead of leaving them to sleep
+    // until their own deadline. Each removes itself from the registry on completion.
+    private var nextInFlightToken: UInt64 = 0
+    private var inFlightTasks: [UInt64: Task<Void, Never>] = [:]
+
     // MARK: - Init / connect / disconnect
 
     public init(transport: some FirmataTransport) {
@@ -216,7 +222,17 @@ public actor FirmataClient {
         pendingHttp.removeAll()
         pop(&pendingWiFiKey)?.resume(throwing: error)
         pop(&pendingWiFiStatus)?.resume(throwing: error)
+        for task in inFlightTasks.values { task.cancel() }
+        inFlightTasks.removeAll()
     }
+
+    /// Allocate a tracking token for a fire-and-forget timeout task.
+    private func nextTrackingToken() -> UInt64 {
+        defer { nextInFlightToken &+= 1 }
+        return nextInFlightToken
+    }
+    /// Remove a finished timeout task from the registry.
+    private func clearInFlight(_ token: UInt64) { inFlightTasks[token] = nil }
 
     // MARK: - Digital I/O
 
@@ -297,9 +313,11 @@ public actor FirmataClient {
         do {
             let value: Bool = try await withCheckedThrowingContinuation { cont in
                 pendingDigitalRead[id] = (pin, cont)
-                Task { [weak self] in
+                let token = nextTrackingToken()
+                inFlightTasks[token] = Task { [weak self] in
                     try? await Task.sleep(for: timeout)
                     await self?.timeoutDigitalRead(id)
+                    await self?.clearInFlight(token)
                 }
             }
             if !wasReporting { try? await reportDigitalPort(port, enable: false) }
@@ -378,9 +396,11 @@ public actor FirmataClient {
         do {
             let value: UInt16 = try await withCheckedThrowingContinuation { cont in
                 pendingAnalogRead[id] = (channel, cont)
-                Task { [weak self] in
+                let token = nextTrackingToken()
+                inFlightTasks[token] = Task { [weak self] in
                     try? await Task.sleep(for: timeout)
                     await self?.timeoutAnalogRead(id)
+                    await self?.clearInFlight(token)
                 }
             }
             if !wasReporting { try? await reportAnalogChannel(channel, enable: false) }
@@ -411,10 +431,11 @@ public actor FirmataClient {
     }
 
     /// Set the analog sampling interval (default 19 ms on standard firmware).
-    public func setSamplingInterval(milliseconds: UInt16) async throws {
+    public func setSamplingInterval(_ interval: Duration) async throws {
+        let ms = UInt16(clamping: interval.firmataMilliseconds)
         try await transport.send([
             Cmd.startSysEx, SysEx.samplingInterval,
-            UInt8(milliseconds & 0x7F), UInt8((milliseconds >> 7) & 0x7F),
+            UInt8(ms & 0x7F), UInt8((ms >> 7) & 0x7F),
             Cmd.endSysEx,
         ])
     }
@@ -466,17 +487,20 @@ public actor FirmataClient {
         let id = httpSeq; httpSeq &+= 1
         return try await withCheckedThrowingContinuation { continuation in
             pendingHttp[id] = continuation
-            Task {
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
                 do {
                     try await self.transport.send(bytes)
                 } catch {
                     if let c = self.pendingHttp.removeValue(forKey: id) { c.resume(throwing: error) }
+                    self.clearInFlight(token)
                     return
                 }
                 try? await Task.sleep(for: timeout)
                 if let c = self.pendingHttp.removeValue(forKey: id) {
                     c.resume(throwing: FirmataError.noResponse)
                 }
+                self.clearInFlight(token)
             }
         }
     }
@@ -543,22 +567,26 @@ public actor FirmataClient {
     private func wifiBeginHandshake(timeout: Duration) async throws -> [UInt8] {
         try await withCheckedThrowingContinuation { cont in
             pendingWiFiKey = cont
-            Task {
-                do { try await transport.send(wifiFrame(WiFiCfg.begin)) }
-                catch { if let c = pop(&pendingWiFiKey) { c.resume(throwing: error) }; return }
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do { try await self.transport.send(self.wifiFrame(WiFiCfg.begin)) }
+                catch { if let c = self.pop(&self.pendingWiFiKey) { c.resume(throwing: error) }; self.clearInFlight(token); return }
                 try? await Task.sleep(for: timeout)
-                if let c = pop(&pendingWiFiKey) { c.resume(throwing: FirmataError.noResponse) }
+                if let c = self.pop(&self.pendingWiFiKey) { c.resume(throwing: FirmataError.noResponse) }
+                self.clearInFlight(token)
             }
         }
     }
     private func sendWiFiAndAwaitStatus(_ frame: [UInt8], timeout: Duration) async throws -> (Int, String) {
         try await withCheckedThrowingContinuation { cont in
             pendingWiFiStatus = cont
-            Task {
-                do { try await transport.send(frame) }
-                catch { if let c = pop(&pendingWiFiStatus) { c.resume(throwing: error) }; return }
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do { try await self.transport.send(frame) }
+                catch { if let c = self.pop(&self.pendingWiFiStatus) { c.resume(throwing: error) }; self.clearInFlight(token); return }
                 try? await Task.sleep(for: timeout)
-                if let c = pop(&pendingWiFiStatus) { c.resume(throwing: FirmataError.noResponse) }
+                if let c = self.pop(&self.pendingWiFiStatus) { c.resume(throwing: FirmataError.noResponse) }
+                self.clearInFlight(token)
             }
         }
     }
@@ -663,11 +691,12 @@ public actor FirmataClient {
     // MARK: - I2C
 
     /// Configure I2C. Call once before any I2C read/write.
-    /// `delayMicroseconds` adds a delay between register write and subsequent read.
-    public func configureI2C(delayMicroseconds: UInt16 = 0) async throws {
+    /// `delay` is inserted between a register write and the subsequent read.
+    public func configureI2C(delay: Duration = .zero) async throws {
+        let us = delay.firmataMicroseconds
         try await transport.send([
             Cmd.startSysEx, SysEx.i2cConfig,
-            UInt8(delayMicroseconds & 0x7F), UInt8((delayMicroseconds >> 7) & 0x7F),
+            UInt8(us & 0x7F), UInt8((us >> 7) & 0x7F),
             Cmd.endSysEx,
         ])
     }
@@ -739,7 +768,7 @@ public actor FirmataClient {
     /// Build a task from a recorded sequence, upload it, and schedule it.
     ///
     /// A *task* is a recording of the same calls you'd normally make live — pin
-    /// modes, writes, and ``FirmataTaskRecorder/delay(ms:)`` waits — that the board
+    /// modes, writes, and ``FirmataTaskRecorder/delay(_:)`` waits — that the board
     /// stores and replays on its own. It keeps running after this client
     /// disconnects (until overwritten, ``deleteTask(id:)``, ``resetTasks()``, or a
     /// power cycle, since tasks live in RAM).
@@ -751,10 +780,10 @@ public actor FirmataClient {
     /// ```swift
     /// Task {
     ///     // Blink pin 2 every 500 ms — runs on the device, survives disconnect.
-    ///     try await client.uploadTask(id: 2, startDelayMs: 0, repeatEveryMs: 500) { t in
+    ///     try await client.uploadTask(id: 2, repeatEvery: .milliseconds(500)) { t in
     ///         t.setPinMode(2, mode: .output)   // recorded, not sent now
     ///         t.digitalWrite(pin: 2, high: true)
-    ///         t.delay(ms: 500)                 // the board waits 500 ms here
+    ///         t.delay(.milliseconds(500))      // the board waits 500 ms here
     ///         t.digitalWrite(pin: 2, high: false)
     ///     }
     ///     await client.disconnect()            // the LED keeps blinking
@@ -764,23 +793,23 @@ public actor FirmataClient {
     /// - Parameters:
     ///   - id: Task id (`0`-`127`). Any existing task with this id is replaced, so
     ///     reusing an id (e.g. the pin number) restarts that task.
-    ///   - startDelayMs: Milliseconds to wait before the first run (`0` = immediately).
-    ///   - repeatEveryMs: If non-`nil`, the task loops forever, waiting this many
-    ///     milliseconds between repetitions (a trailing scheduler delay). `nil` runs
+    ///   - startDelay: How long to wait before the first run (`.zero` = immediately).
+    ///   - repeatEvery: If non-`nil`, the task loops forever, waiting this long
+    ///     between repetitions (a trailing scheduler delay). `nil` runs
     ///     the sequence once, after which the task is removed.
     ///   - build: A closure that records the actions into the passed-in
-    ///     ``FirmataTaskRecorder``. Insert waits with `recorder.delay(ms:)`. The
+    ///     ``FirmataTaskRecorder``. Insert waits with `recorder.delay(_:)`. The
     ///     calls are captured as bytes — nothing is sent until upload.
     /// - Throws: A transport error, or ``FirmataError/transportClosed`` if the link drops.
     public func uploadTask(
         id: UInt8 = 1,
-        startDelayMs: UInt32 = 0,
-        repeatEveryMs: UInt32? = nil,
+        startDelay: Duration = .zero,
+        repeatEvery: Duration? = nil,
         _ build: (FirmataTaskRecorder) -> Void
     ) async throws {
         let recorder = FirmataTaskRecorder()
         build(recorder)
-        if let period = repeatEveryMs { recorder.delay(ms: period) }
+        if let period = repeatEvery { recorder.delay(period) }
         let data = recorder.bytes
 
         try await deleteTask(id: id)                 // replace any existing task
@@ -792,7 +821,7 @@ public actor FirmataClient {
             try await addToTask(id: id, data: Array(data[offset..<end]))
             offset = end
         }
-        try await scheduleTask(id: id, delayMs: startDelayMs)
+        try await scheduleTask(id: id, delay: startDelay)
 
         // Confirm the device has received and stored everything via a round-trip,
         // so it is safe to `disconnect()` immediately after this call returns.
@@ -821,10 +850,10 @@ public actor FirmataClient {
         try await transport.send(bytes)
     }
 
-    /// Schedule a task to start `delayMs` from now (resets its position to 0).
-    public func scheduleTask(id: UInt8, delayMs: UInt32) async throws {
+    /// Schedule a task to start `delay` from now (resets its position to 0).
+    public func scheduleTask(id: UInt8, delay: Duration) async throws {
         var bytes: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.schedule, id]
-        bytes += encode7BitFirmata(timeBytes(delayMs))
+        bytes += encode7BitFirmata(timeBytes(delay.firmataMilliseconds))
         bytes.append(Cmd.endSysEx)
         try await transport.send(bytes)
     }

@@ -47,7 +47,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
         let v = r.json.getNumber(h.body, "id", scaledBy: 2, into: .reg(15), found: .reg(14))
-        #expect(v.register == 15)
+        #expect(v.index == 15)
         #expect(Array(r.bytes.suffix(12)) == [   // the JSON_NUM op (after SELECT live)
             0xF0, 0x7B, 0x7F, 0x16, 15, 14, 2, 0x02, 0x00, 105, 100, 0xF7,
         ])
@@ -57,7 +57,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
         let v = r.json.getNumber(h.body, "a", into: .reg(3), found: .reg(4))   // scale defaults to 0
-        #expect(v.register == 3)
+        #expect(v.index == 3)
         #expect(Array(r.bytes.suffix(11)) == [
             0xF0, 0x7B, 0x7F, 0x16, 3, 4, 0, 0x01, 0x00, 97, 0xF7,
         ])
@@ -67,7 +67,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
         let b = r.json.bodyContains(h.body, "OK", into: .boolReg(15))
-        #expect(b.register == 15)
+        #expect(b.index == 15)
         #expect(Array(r.bytes.suffix(10)) == [
             0xF0, 0x7B, 0x7F, 0x18, 15, 0x02, 0x00, 79, 75, 0xF7,
         ])
@@ -78,7 +78,7 @@ struct InternetActionTests {
     @Test func arithRegConstEncoding() {
         var r = FirmataTaskRecorder()
         let sum = r.add(.reg(0), .number(5), into: .reg(3))
-        #expect(sum.register == 3)
+        #expect(sum.index == 3)
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x1A,
             0x00, 0x03,                // op=add, dst=3
@@ -105,8 +105,8 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.add(.reg(0), .reg(1))        // -> R15
         let b = r.multiply(.reg(0), .reg(1))   // -> R14
-        #expect(a.register == 15)
-        #expect(b.register == 14)
+        #expect(a.index == 15)
+        #expect(b.index == 14)
     }
 
     // MARK: - Float registers / arithmetic / jsonFloat
@@ -114,7 +114,7 @@ struct InternetActionTests {
     @Test func setFloatEncoding() {
         var r = FirmataTaskRecorder()
         let f = r.setFloatRegister(.freg(2), to: 1.5)
-        #expect(f.register == 2)
+        #expect(f.index == 2)
         let bits = Float(1.5).bitPattern
         let expected: [UInt8] = [0xF0, 0x7B, 0x7F, 0x1B, 2]
             + encode7BitFirmata(timeBytes(bits)) + [0xF7]
@@ -144,15 +144,15 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.addFloat(.freg(0), .freg(1))       // -> F7
         let b = r.multiplyFloat(.freg(0), .freg(1))  // -> F6
-        #expect(a.register == 7)
-        #expect(b.register == 6)
+        #expect(a.index == 7)
+        #expect(b.index == 6)
     }
 
     @Test func jsonFloatEncoding() {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
         let v = r.json.getFloat(h.body, "p", into: .freg(1), found: .reg(2))
-        #expect(v.register == 1)
+        #expect(v.index == 1)
         #expect(Array(r.bytes.suffix(10)) == [
             0xF0, 0x7B, 0x7F, 0x1D, 1, 2, 0x01, 0x00, 112, 0xF7,   // JSON_FLOAT (after SELECT live)
         ])
@@ -161,7 +161,7 @@ struct InternetActionTests {
     // MARK: - Query ops (jsonType / jsonSize / heapStats)
 
     @Test func queryOpEncoding() {
-        for (op, build): (UInt8, (FirmataTaskRecorder, JSONHandle) -> Void) in [
+        for (op, build): (UInt8, (FirmataTaskRecorder, TaskJSON) -> Void) in [
             (0x1E, { _ = $0.json.getType($1, "p", into: .reg(3)) }),
             (0x1F, { _ = $0.json.getSize($1, "p", into: .reg(3)) }),
         ] {
@@ -188,7 +188,7 @@ struct InternetActionTests {
     @Test func changeSlotEncoding() {
         let r = FirmataTaskRecorder()
         let s = r.string.createString("hi")               // string slot 0 (fw 2)
-        s.changeSlot(StringSlot(3))                        // copy fw 2 -> fw 5, rebind
+        s.changeSlot(TaskStringSlot(3))                        // copy fw 2 -> fw 5, rebind
         #expect(s.slot.index == 3)
         #expect(Array(r.bytes.suffix(7)) == [0xF0, 0x7B, 0x7F, 0x2E, 5, 2, 0xF7])  // COPY_SLOT dst=5 src=2
     }
@@ -196,7 +196,7 @@ struct InternetActionTests {
     @Test func heapStatsEncoding() {
         var r = FirmataTaskRecorder()
         let (f, l) = r.heapStats(freeInto: .reg(0), largestInto: .reg(1))
-        #expect(f.register == 0 && l.register == 1)
+        #expect(f.index == 0 && l.index == 1)
         #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x21, 0, 1, 0xF7])
     }
 
@@ -228,12 +228,12 @@ struct InternetActionTests {
         var r = FirmataTaskRecorder()
         let a = r.httpGet("http://x")          // status auto -> R15
         let b = r.httpGet("http://x")          // status auto -> R14
-        #expect(a.status.register == 15)
-        #expect(b.status.register == 14)
+        #expect(a.status.index == 15)
+        #expect(b.status.index == 14)
         // explicit statusInto still works and is reflected in the handle
         var r2 = FirmataTaskRecorder()
         let c = r2.httpGet("http://x", statusInto: .reg(3))
-        #expect(c.status.register == 3)
+        #expect(c.status.index == 3)
         #expect(r2.bytes == [
             0xF0, 0x7B, 0x7F, 0x15, 0x00, 3, 0x08, 0x00,
         ] + urlBytes + [0x00, 0x00, 0xF7] + bodyGen0)
@@ -244,9 +244,9 @@ struct InternetActionTests {
     @Test func snapshotUpgradesHandleInPlaceThenFree() {
         let r = FirmataTaskRecorder()
         let a = r.httpGet("http://x")        // borrowed handle (status R15, gen R0)
-        r.snapshotJson(a.body)               // in-place upgrade -> owns JSON slot 0
+        r.json.snapshot(a.body)               // in-place upgrade -> owns JSON slot 0
         #expect(a.body.snapshotSlot?.index == 0)
-        r.freeJson(a.body)
+        r.json.free(a.body)
         let expectedTail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x23, 0, 0, 0, 0xF7] +   // snapshot slot 0, whole body
             [0xF0, 0x7B, 0x7F, 0x25, 0, 0xF7]           // free slot 0
@@ -257,7 +257,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let resp = r.httpGet("http://x")     // status R15, gen R0
         let fresh = resp.body.isValid()      // R14 = requestCount; R13 = (R0 == R14)
-        #expect(fresh.register == 13)
+        #expect(fresh.index == 13)
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x22, 14, 0xF7] +                            // REQUEST_COUNT -> R14
             [0xF0, 0x7B, 0x7F, 0x27, 0x00, 13, 0x00, 0x00, 0x00, 14, 0xF7]  // CMP equal R13 = (R0 == R14)
@@ -267,9 +267,9 @@ struct InternetActionTests {
     @Test func isValidOnOwnedSnapshotIsConstTrue() {
         let r = FirmataTaskRecorder()
         let resp = r.httpGet("http://x")
-        r.snapshotJson(resp.body)            // owned -> always valid
+        r.json.snapshot(resp.body)            // owned -> always valid
         let v = resp.body.isValid()
-        #expect(v.register == nil)           // a literal true, not a register read
+        #expect(v.index == nil)           // a literal true, not a register read
     }
 
     @Test func taskResultStatusRawValues() {
@@ -284,7 +284,7 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")                 // borrowed; generation captured in R0
         let v = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
-        #expect(v.register == 7)
+        #expect(v.index == 7)
         let tail: [UInt8] =
             [0xF0, 0x7B, 0x7F, 0x24, 0x00, 0x00, 0xF7] +              // SELECT live, gen R0
             [0xF0, 0x7B, 0x7F, 0x16, 7, 8, 0, 0x02, 0x00, 105, 100, 0xF7]  // JSON_NUM "id" -> R7
@@ -294,7 +294,7 @@ struct InternetActionTests {
     @Test func jsonNamespaceSnapshotSelectsSnapshot() {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x")
-        r.snapshotJson(h.body)                        // in-place -> owns slot 0
+        r.json.snapshot(h.body)                        // in-place -> owns slot 0
         #expect(h.body.snapshotSlot?.index == 0)
         _ = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
         let tail: [UInt8] =
@@ -309,11 +309,11 @@ struct InternetActionTests {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x", statusInto: .reg(0))
         let pct = r.json.getNumber(h.body, "changePercent", scaledBy: 2)   // dst=15, found=14
-        #expect(pct.register == 15)
+        #expect(pct.index == 15)
         r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: 2, high: true) }
         // The next auto-allocated read should be R13 (15 and 14 already taken).
         let nxt = r.json.bodyContains(h.body, "x")
-        #expect(nxt.register == 13)
+        #expect(nxt.index == 13)
     }
 
     // MARK: - Parser: HTTP_REPLY -> .httpResponse

@@ -140,16 +140,16 @@ Scheduler, SysEx `0x7B`). Build a task with the recorder, upload it, and leave:
 
 ```swift
 // Blink pin 2 every 250 ms — forever, with no client connected.
-try await client.uploadTask(id: 1, repeatEveryMs: 250) { t in
+try await client.uploadTask(id: 1, repeatEvery: .milliseconds(250)) { t in
     t.setPinMode(2, mode: .output)
     t.digitalWrite(pin: 2, high: true)
-    t.delay(ms: 250)
+    t.delay(.milliseconds(250))
     t.digitalWrite(pin: 2, high: false)
 }
 await client.disconnect()          // the board keeps blinking
 ```
 
-- `startDelayMs` delays the first run; `repeatEveryMs` makes the task loop with
+- `startDelay` delays the first run; `repeatEvery` makes the task loop with
   that gap (omit it for a one-shot, which runs once and is then removed).
 - `uploadTask` confirms receipt with a round-trip before returning, so it is
   safe to `disconnect()` immediately afterwards.
@@ -171,7 +171,7 @@ branch with `ifTrue`:
 
 ```swift
 // A night-light running entirely on the board, no client connected.
-try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { t in
     t.setPinMode(2, mode: .output)
     t.analogRead(into: .reg(0), channel: 0)           // R0 = analog A0
     t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
@@ -181,11 +181,11 @@ try await client.uploadTask(id: 3, repeatEveryMs: 1000) { t in
 ```
 
 - `setRegister(_:to:)`, `digitalRead(into:pin:)`, `analogRead(into:channel:)`. The
-  register-returning reads are **typed**: `digitalRead(pin:)` → `BoolOperand`,
-  `analogRead(channel:)` → `NumberOperand`.
+  register-returning reads are **typed**: `digitalRead(pin:)` → `TaskBool`,
+  `analogRead(channel:)` → `TaskNumber`.
 - `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.number(value)`;
   comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
-- `compare(a, op, b)` → a reusable `BoolOperand`; `ifTrue(boolOperand) { … }` branches on
+- `compare(a, op, b)` → a reusable `TaskBool`; `ifTrue(_ condition: TaskBool) { … }` branches on
   a bool directly (a `digitalRead`, a JSON predicate, or an `isValid()` result).
 - `channel` is an analog channel index (`A0 = 0`, …), **not** a pin number.
 
@@ -201,7 +201,7 @@ certificate validation** (a browser-style root-CA bundle).
 
 ```swift
 // Every minute: green LED if SPY is up on the day, red if it's down — no host.
-try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
+try await client.uploadTask(id: 5, repeatEvery: .milliseconds(60_000)) { board in
     board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled (×100):
@@ -218,13 +218,13 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
 - `httpGet(_:)` / `httpPost(_:body:)` **return a `TaskHTTPResponse`** — branch on
   `resp.status` (HTTP status; `0` = Wi-Fi down / failure). Status register
   auto-allocates (or pass `statusInto:`). The body is retained for inspection via `resp.body`.
-- **`board.json` ops** take the body handle (`resp.body`, a `JSONHandle`) and return a
+- **`board.json` ops** take the body handle (`resp.body`, a `TaskJSON`) and return a
   **typed** result operand (auto-allocated R15↓ or via `into:`). They select the body's
   source automatically (no manual step):
-  - `json.getNumber(body, path, scaledBy:)` → `NumberOperand` (number × 10ⁿ, truncated; also
-    parses a **quoted** number `"593.2"`). `json.getFloat(body, path)` → `FloatOperand`.
-  - `json.bodyContains(body, text)` → `BoolOperand` (whole-body substring).
-  - `json.getString(body, path)` → `StringHandle` — captures a string value (into a slot)
+  - `json.getNumber(body, path, scaledBy:)` → `TaskNumber` (number × 10ⁿ, truncated; also
+    parses a **quoted** number `"593.2"`). `json.getFloat(body, path)` → `TaskFloat`.
+  - `json.bodyContains(body, text)` → `TaskBool` (whole-body substring).
+  - `json.getString(body, path)` → `TaskString` — captures a string value (into a slot)
     for the `board.string` ops: `length`/`equals`/`contains`/`indexOf`/`toInt`.
   - `json.getType(body, path)` → a `TaskJSONValueType` raw value — branch before extracting.
   - `json.getSize(body, path)` sizes a value; pair
@@ -232,8 +232,8 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   - `path` is dotted/indexed: `quoteResponse.result[0].regularMarketChangePercent`.
     Inspection walks the **full** body (no parse-size cap).
 - **Arithmetic** on `board` — integer `add`/`subtract`/`multiply`/`divide`/`modulo(_:_:into:)`
-  (→ `NumberOperand`) and **float** `addFloat`/`subtractFloat`/`multiplyFloat`/`divideFloat`
-  (→ `FloatOperand`). 16 int registers + **8 float registers (F0–F7)**;
+  (→ `TaskNumber`) and **float** `addFloat`/`subtractFloat`/`multiplyFloat`/`divideFloat`
+  (→ `TaskFloat`). 16 int registers + **8 float registers (F0–F7)**;
   `setFloatRegister(_:to:)` loads a literal; operands mix (ints promote). Percent change
   on-device with floats:
   ```swift
@@ -250,7 +250,7 @@ try await client.uploadTask(id: 5, repeatEveryMs: 60_000) { board in
   later requests. A *borrowed* (non-snapshotted) handle goes **stale** once a newer request
   replaces the live body; guard it with `body.isValid()`:
   ```swift
-  let a = board.httpGet(urlA); board.snapshotJson(a.body)   // a.body now owns a snapshot
+  let a = board.httpGet(urlA); board.json.snapshot(a.body)   // a.body now owns a snapshot
   let b = board.httpGet(urlB)                                 // a's live body would be stale
   let aVal = board.json.getNumber(a.body, "price")              // from A (snapshot)
   let bVal = board.json.getNumber(b.body, "price")              // from B (live)
@@ -353,13 +353,13 @@ LAST_STATUS    F0 7B 7F 26 <dst>                                        F7  // R
   (`0` ok, `1` notFound, `2` stale, `3` typeMismatch, `4` tooBig, `5` allocFailed).
 - Compare + strings: `CMP` (`0x27`) → `R[dst]` = `(A <op> B) ? 1 : 0` (a reusable boolean
   register, same operands as `IF`). `JSON_GET_STRING` (`0x2C`) copies a JSON string's content
-  at a path into a snapshot slot (`board.json.getString` → a `StringHandle`); the `board.string`
+  at a path into a snapshot slot (`board.json.getString` → a `TaskString`); the `board.string`
   ops then run on it: `STR_BODY_LEN` (`0x28`) → byte length; `STR_EQUALS` (`0x29`) → equals;
   `STR_INDEXOF` (`0x2A`) → index, or `-1`; `STR_TO_NUM` (`0x2B`) → leading integer (+ found
   flag); `contains` reuses `BODY_CONTAINS` (`0x18`). `STR_SET_SLOT` (`0x2D`) fills a slot from a
   **literal** (`board.string.createString`); `STR_COPY_SLOT` (`0x2E`) copies one string slot into
-  another (`StringHandle.changeSlot` / `board.snapshotString`). Slots are typed: `JSONSlot` (2)
-  and `StringSlot` (10), 12 device slots total.
+  another (`TaskString.changeSlot`). Slots are typed: `TaskJSONSlot` (2)
+  and `TaskStringSlot` (10), 12 device slots total.
 
 The device replies (only when a host is connected) with the result:
 
@@ -428,16 +428,16 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 | Digital | `setPinMode(_:mode:)`, `digitalWrite(pin:high:)`, `writeDigitalPort(_:pinMask:)`, `reportDigitalPort(_:enable:)` |
 | Analog | `analogWrite(channel:value:)`, `extendedAnalogWrite(pin:value:)`, `reportAnalogPin(_:enable:)` |
 | Queries | `queryProtocolVersion()`, `queryFirmware()`, `queryCapabilities()`, `queryAnalogMapping()`, `queryPinState(pin:)` |
-| System | `systemReset()`, `setSamplingInterval(milliseconds:)`, `sendString(_:)` |
-| I2C | `configureI2C(delayMicroseconds:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:register:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
+| System | `systemReset()`, `setSamplingInterval(_:)`, `sendString(_:)` |
+| I2C | `configureI2C(delay:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:register:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
 | Live reads | `digitalRead(pin:timeout:) -> Bool`, `analogRead(channel:timeout:) -> UInt16` |
-| Scheduler | `uploadTask(id:startDelayMs:repeatEveryMs:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delayMs:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
+| Scheduler | `uploadTask(id:startDelay:repeatEvery:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delay:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
 | **Extension¹** — internet | `httpGet(_:timeout:) -> HTTPResponse`, `httpPost(_:body:timeout:) -> HTTPResponse` |
 | **Extension¹** — Wi-Fi provisioning | `provisionWiFi(ssid:password:timeout:) -> WiFiStatus`, `queryWiFiStatus(timeout:)`, `forgetWiFi(timeout:)` (encrypted over BLE — see [COOKBOOK](COOKBOOK.md) §22) |
 
 `FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
-`digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(ms:)`, plus
-**I2C** `i2cConfig(delayMicroseconds:)` / `i2cWrite(address:data:is10Bit:)` (drive an
+`digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(_:)`, plus
+**I2C** `i2cConfig(delay:)` / `i2cWrite(address:data:is10Bit:)` (drive an
 I2C device — e.g. an SSD1306 OLED — from a task) — plus the
 **extension¹** ops: `setRegister`, `digitalRead(into:)`/`digitalRead(pin:)`,
 `analogRead(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
