@@ -177,7 +177,7 @@ struct FirmataParserTests {
             Issue.record("Expected .i2cReply"); return
         }
         #expect(reply.address == 0x48)
-        #expect(reply.register == 0)
+        #expect(reply.registerAddress == 0)
         #expect(reply.data == [0xAB])
     }
 

@@ -708,14 +708,17 @@ public actor FirmataClient {
     }
 
     /// Read bytes from an I2C device (one-shot). Returns the reply.
-    /// If `register` is provided it is written before the read request.
+    /// If `registerAddress` is provided it is written before the read request.
+    /// - Note: `registerAddress` is an address *inside the I2C peripheral* (a sub-address
+    ///   like a sensor's config register) — **not** one of the board's on-device logic
+    ///   registers (``TaskNumberRegister``).
     public func i2cReadOnce(
         address: UInt16,
-        register: UInt16? = nil,
+        registerAddress: UInt16? = nil,
         count: UInt16,
         is10Bit: Bool = false
     ) async throws -> I2CReply {
-        if let reg = register {
+        if let reg = registerAddress {
             try await sendI2CRequest(address: address, mode: .write, is10Bit: is10Bit,
                                      autoRestart: true, payload: encode7BitPair(reg))
         }
@@ -738,14 +741,16 @@ public actor FirmataClient {
     }
 
     /// Start continuous I2C reads. Replies arrive on the ``messages`` stream.
-    /// If `register` is provided it is written before starting reads.
+    /// If `registerAddress` is provided it is written before starting reads.
+    /// - Note: `registerAddress` is an address *inside the I2C peripheral* — **not** one of
+    ///   the board's on-device logic registers (``TaskNumberRegister``).
     public func i2cStartReading(
         address: UInt16,
-        register: UInt16? = nil,
+        registerAddress: UInt16? = nil,
         count: UInt16,
         is10Bit: Bool = false
     ) async throws {
-        if let reg = register {
+        if let reg = registerAddress {
             try await sendI2CRequest(address: address, mode: .write, is10Bit: is10Bit,
                                      autoRestart: true, payload: encode7BitPair(reg))
         }
@@ -780,11 +785,11 @@ public actor FirmataClient {
     /// ```swift
     /// Task {
     ///     // Blink pin 2 every 500 ms — runs on the device, survives disconnect.
-    ///     try await client.uploadTask(id: 2, repeatEvery: .milliseconds(500)) { t in
-    ///         t.setPinMode(2, mode: .output)   // recorded, not sent now
-    ///         t.digitalWrite(pin: 2, high: true)
-    ///         t.delay(.milliseconds(500))      // the board waits 500 ms here
-    ///         t.digitalWrite(pin: 2, high: false)
+    ///     try await client.uploadTask(id: 2, repeatEvery: .milliseconds(500)) { board in
+    ///         board.setPinMode(2, mode: .output)   // recorded, not sent now
+    ///         board.digitalWrite(pin: 2, high: true)
+    ///         board.delay(.milliseconds(500))      // the board waits 500 ms here
+    ///         board.digitalWrite(pin: 2, high: false)
     ///     }
     ///     await client.disconnect()            // the LED keeps blinking
     /// }

@@ -184,14 +184,14 @@ public struct FirmataParser: Sendable {
     private func parseI2CReply(_ data: [UInt8]) -> FirmataMessage? {
         guard data.count >= 4 else { return nil }
         let address  = UInt16(data[0]) | (UInt16(data[1] & 0x07) << 7)
-        let register = UInt16(data[2]) | (UInt16(data[3]) << 7)
+        let registerAddress = UInt16(data[2]) | (UInt16(data[3]) << 7)
         var bytes: [UInt8] = []
         var i = 4
         while i + 1 < data.count {
             bytes.append(UInt8((UInt16(data[i]) | (UInt16(data[i + 1]) << 7)) & 0xFF))
             i += 2
         }
-        return .i2cReply(I2CReply(address: address, register: register, data: bytes))
+        return .i2cReply(I2CReply(address: address, registerAddress: registerAddress, data: bytes))
     }
 
     private func parseExtendedAnalog(_ data: [UInt8]) -> FirmataMessage? {

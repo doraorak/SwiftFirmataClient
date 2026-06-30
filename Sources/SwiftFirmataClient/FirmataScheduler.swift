@@ -232,8 +232,8 @@ public final class FirmataTaskRecorder {
     /// device when the task runs, and this hands you the register it lands in.)
     ///
     /// ```swift
-    /// let pressed = t.digitalRead(pin: 7)              // -> .reg(n)
-    /// t.ifTrue(pressed, .equal, .number(0),             // active-low button
+    /// let pressed = board.digitalRead(pin: 7)              // -> .reg(n)
+    /// board.ifTrue(pressed, .equal, .number(0),             // active-low button
     ///     then: { $0.digitalWrite(pin: 2, high: true) })
     /// ```
     ///
@@ -299,15 +299,15 @@ public final class FirmataTaskRecorder {
     /// only when the comparison is true, otherwise the `elseDo` block (if given) runs.
     ///
     /// ```swift
-    /// t.analogRead(into: .reg(0), channel: 0)              // R0 = analog A0
-    /// t.ifTrue(.reg(0), .greaterThan, .number(512),         // if R0 > 512
+    /// board.analogRead(into: .reg(0), channel: 0)              // R0 = analog A0
+    /// board.ifTrue(.reg(0), .greaterThan, .number(512),         // if R0 > 512
     ///     then:   { b in b.digitalWrite(pin: 2, high: true) },   // …LED on
     ///     elseDo: { b in b.digitalWrite(pin: 2, high: false) })  // …else off
     /// ```
     ///
     /// Each branch is itself a recorder closure: the `b` (or shorthand `$0`) passed
     /// to `then`/`elseDo` is a nested ``FirmataTaskRecorder`` — record that branch's
-    /// steps on it exactly like the outer `t`. Branches may contain anything,
+    /// steps on it exactly like the outer `board`. Branches may contain anything,
     /// including ``delay(_:)`` and further `ifTrue` calls (nesting works).
     ///
     /// - Parameters:
@@ -355,8 +355,8 @@ public final class FirmataTaskRecorder {
     /// ``compare(_:_:_:into:)``, etc.
     ///
     /// ```swift
-    /// let pressed = t.digitalRead(pin: 7)        // -> TaskBool
-    /// t.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }
+    /// let pressed = board.digitalRead(pin: 7)        // -> TaskBool
+    /// board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }
     /// ```
     ///
     /// This is shorthand for ``ifTrue(_:_:_:then:elseDo:)`` with `.notEqual, .number(0)`.

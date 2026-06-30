@@ -86,7 +86,10 @@ public struct PinState: Sendable {
 
 public struct I2CReply: Sendable {
     public let address: UInt16
-    public let register: UInt16
+    /// The peripheral's internal register **address** the reply was read from (the
+    /// sub-address written before the read). This is an address *inside the I2C device*
+    /// and is unrelated to the board's on-device logic registers (``TaskNumberRegister``).
+    public let registerAddress: UInt16
     public let data: [UInt8]
 }
 
