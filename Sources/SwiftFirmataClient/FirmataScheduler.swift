@@ -45,8 +45,8 @@ public struct SchedulerTask: Sendable {
 /// ```swift
 /// try await client.uploadTask(id: 1) { board in
 /// //                                  ^ this is the recorder
-///     board.setPinMode(2, mode: .output)
-///     board.digitalWrite(pin: 2, high: true)
+///     board.setPinMode(.pin(2), mode: .output)
+///     board.digitalWrite(pin: .pin(2), high: true)
 /// }
 /// ```
 ///
@@ -232,29 +232,30 @@ public final class FirmataTaskRecorder {
     /// device when the task runs, and this hands you the register it lands in.)
     ///
     /// ```swift
-    /// let pressed = board.digitalRead(pin: .pin(7))         // -> .reg(n)
+    /// let pressed = board.digitalRead(pin: .pin(7))         // -> TaskBool
     /// board.ifTrue(pressed, .equal, .number(0),             // active-low button
     ///     then: { $0.digitalWrite(pin: .pin(2), high: true) })
     /// ```
     ///
-    /// Auto-allocated registers cycle `R15 → R0`; for explicit control use
-    /// ``digitalRead(into:pin:)``. Read into a local first if you'll reuse it, since
-    /// a later auto-read may reuse the same register.
+    /// Auto-allocated registers cycle `R15 → R0`; if you need a **named** register
+    /// (e.g. to reuse it as an explicit `into:` destination), use ``digitalRead(into:pin:)``.
+    /// Read into a local first if you'll reuse it, since a later auto-read may reuse the
+    /// same register.
     /// - Parameter pin: The board pin to read — `.pin(7)` (put it in `.input`/`.inputPullup` first).
-    /// - Returns: The register operand holding `0`/`1`.
-    public func digitalRead(pin: TaskPin) -> TaskBoolRegister {
+    /// - Returns: A ``TaskBool`` holding `0`/`1` — drop it straight into `ifTrue`/`compare`.
+    public func digitalRead(pin: TaskPin) -> TaskBool {
         let r = TaskBoolRegister(allocateRegister())
         digitalRead(into: r, pin: pin)
         return r
     }
 
     /// Record `analogRead(channel)` into an **auto-allocated** register and return
-    /// that register as a ``TaskOperand`` for use in
-    /// ``ifTrue(_:_:_:then:elseDo:)``. See ``digitalRead(pin:)`` for the allocation
-    /// rules; use ``analogRead(into:channel:)`` to choose the register yourself.
+    /// it as a ``TaskNumber`` for use in ``ifTrue(_:_:_:then:elseDo:)``. See
+    /// ``digitalRead(pin:)`` for the allocation rules; use ``analogRead(into:channel:)``
+    /// when you need a named register.
     /// - Parameter channel: Analog channel — `.channel(0)` (`A0 = 0`, …), **not** a pin number.
-    /// - Returns: The register operand holding the reading.
-    public func analogRead(channel: TaskChannel) -> TaskNumberRegister {
+    /// - Returns: A ``TaskNumber`` holding the reading.
+    public func analogRead(channel: TaskChannel) -> TaskNumber {
         let r = allocateRegister(); analogRead(into: r, channel: channel); return r
     }
 
@@ -301,8 +302,8 @@ public final class FirmataTaskRecorder {
     /// ```swift
     /// board.analogRead(into: .reg(0), channel: 0)              // R0 = analog A0
     /// board.ifTrue(.reg(0), .greaterThan, .number(512),         // if R0 > 512
-    ///     then:   { b in b.digitalWrite(pin: 2, high: true) },   // …LED on
-    ///     elseDo: { b in b.digitalWrite(pin: 2, high: false) })  // …else off
+    ///     then:   { b in b.digitalWrite(pin: .pin(2), high: true) },   // …LED on
+    ///     elseDo: { b in b.digitalWrite(pin: .pin(2), high: false) })  // …else off
     /// ```
     ///
     /// Each branch is itself a recorder closure: the `b` (or shorthand `$0`) passed
@@ -355,8 +356,8 @@ public final class FirmataTaskRecorder {
     /// ``compare(_:_:_:into:)``, etc.
     ///
     /// ```swift
-    /// let pressed = board.digitalRead(pin: 7)        // -> TaskBool
-    /// board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }
+    /// let pressed = board.digitalRead(pin: .pin(7))        // -> TaskBool
+    /// board.ifTrue(pressed) { $0.digitalWrite(pin: .pin(2), high: true) }
     /// ```
     ///
     /// This is shorthand for ``ifTrue(_:_:_:then:elseDo:)`` with `.notEqual, .number(0)`.
@@ -380,11 +381,11 @@ public final class FirmataTaskRecorder {
     ///
     /// ```swift
     /// let isUp = board.compare(pct, .greaterThan, .number(0))   // -> TaskBool
-    /// board.ifTrue(isUp) { $0.digitalWrite(pin: 2, high: true) }
+    /// board.ifTrue(isUp) { $0.digitalWrite(pin: .pin(2), high: true) }
     /// ```
     @discardableResult
     public func compare(_ a: TaskOperand, _ op: TaskComparison, _ b: TaskOperand,
-                        into: TaskBoolRegister? = nil) -> TaskBoolRegister {
+                        into: TaskBoolRegister? = nil) -> TaskBool {
         let dst = into ?? TaskBoolRegister(allocateRegister())
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extCmp,
                           op.rawValue, dst.index & 0x0F]
@@ -408,13 +409,13 @@ public final class FirmataTaskRecorder {
     /// ```swift
     /// // Green/red LED from SPY's % change, no host connected.
     /// try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
-    ///     board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
+    ///     board.setPinMode(.pin(2), mode: .output); board.setPinMode(.pin(4), mode: .output)
     ///     let spy = board.httpGet("https://example.com/quote/SPY")             // -> TaskHTTPResponse
     ///     let pct = board.json.getNumber(spy.body, "changePercent", scaledBy: 2)  // -0.42% -> -42
     ///     board.ifTrue(spy.status, .equal, .number(200)) {                 // only act on success
     ///         $0.ifTrue(pct, .greaterThan, .number(0),
-    ///             then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
-    ///             elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+    ///             then:   { $0.digitalWrite(pin: .pin(2), high: true);  $0.digitalWrite(pin: .pin(4), high: false) },
+    ///             elseDo: { $0.digitalWrite(pin: .pin(2), high: false); $0.digitalWrite(pin: .pin(4), high: true) })
     ///     }
     /// }
     /// ```
@@ -473,7 +474,7 @@ public final class FirmataTaskRecorder {
 
     /// Read the device's current request count (body generation) into a register.
     /// Used by ``TaskJSON/isValid()`` to compare against a handle's captured generation.
-    internal func currentRequestCount(into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    internal func currentRequestCount(into: TaskNumberRegister? = nil) -> TaskNumber {
         let dst = into ?? allocateRegister()
         emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst.index & 0x0F, Cmd.endSysEx])
         return dst
@@ -492,27 +493,27 @@ public final class FirmataTaskRecorder {
     /// operand for chaining / `ifTrue`. (64-bit intermediates on the device avoid
     /// overflow; `÷` and `%` by zero yield 0.)
     @discardableResult
-    public func add(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func add(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumber {
         arith(0, a, b, into)
     }
     /// Record `R[dst] = a - b`. See ``add(_:_:into:)``.
     @discardableResult
-    public func subtract(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func subtract(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumber {
         arith(1, a, b, into)
     }
     /// Record `R[dst] = a * b`. See ``add(_:_:into:)``.
     @discardableResult
-    public func multiply(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func multiply(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumber {
         arith(2, a, b, into)
     }
     /// Record `R[dst] = a / b` (integer division; `÷0` → 0). See ``add(_:_:into:)``.
     @discardableResult
-    public func divide(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func divide(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumber {
         arith(3, a, b, into)
     }
     /// Record `R[dst] = a % b` (`%0` → 0). See ``add(_:_:into:)``.
     @discardableResult
-    public func modulo(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func modulo(_ a: TaskOperand, _ b: TaskOperand, into: TaskNumberRegister? = nil) -> TaskNumber {
         arith(4, a, b, into)
     }
 
@@ -528,12 +529,12 @@ public final class FirmataTaskRecorder {
 
     // MARK: Float registers (8 of them, F0–F7)
 
-    /// Record `F[dst] = value`. Returns the float register as a `.freg` operand.
+    /// Record `F[dst] = value`. Returns it as a ``TaskFloat`` operand for chaining.
     /// - Parameters:
     ///   - dst: Destination float register — `.freg(0)`.
     ///   - value: The `Float` constant to store — `.float(100.0)`.
     @discardableResult
-    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral) -> TaskFloatRegister {
+    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral) -> TaskFloat {
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSetFloat, dst.index & 0x07]
         m += encode7BitFirmata(timeBytes(value.rawValue.bitPattern))
         m.append(Cmd.endSysEx); bytes += m
@@ -544,22 +545,22 @@ public final class FirmataTaskRecorder {
     /// literals (ints promote to float). Result float register auto-allocated
     /// (F7↓) unless `into:` is given. `÷0` → 0.
     @discardableResult
-    public func addFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloatRegister {
+    public func addFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloat {
         arithF(0, a, b, into)
     }
     /// Record `F[dst] = a - b` (float). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func subtractFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloatRegister {
+    public func subtractFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloat {
         arithF(1, a, b, into)
     }
     /// Record `F[dst] = a * b` (float). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func multiplyFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloatRegister {
+    public func multiplyFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloat {
         arithF(2, a, b, into)
     }
     /// Record `F[dst] = a / b` (float; `÷0` → 0). See ``addFloat(_:_:into:)``.
     @discardableResult
-    public func divideFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloatRegister {
+    public func divideFloat(_ a: TaskOperand, _ b: TaskOperand, into: TaskFloatRegister? = nil) -> TaskFloat {
         arithF(3, a, b, into)
     }
 
@@ -577,7 +578,7 @@ public final class FirmataTaskRecorder {
     /// contiguous block — so a task can gate an allocation on available memory.
     @discardableResult
     public func heapStats(freeInto: TaskNumberRegister? = nil,
-                                   largestInto: TaskNumberRegister? = nil) -> (free: TaskNumberRegister, largest: TaskNumberRegister) {
+                                   largestInto: TaskNumberRegister? = nil) -> (free: TaskNumber, largest: TaskNumber) {
         let f = freeInto ?? allocateRegister()
         let l = largestInto ?? allocateRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extHeap,
@@ -623,7 +624,7 @@ public struct TaskJSONOps {
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
     public func getNumber(_ body: TaskJSON, _ path: String, scaledBy: UInt8 = 0,
-                          into: TaskNumberRegister? = nil, found: TaskNumberRegister? = nil) -> TaskNumberRegister {
+                          into: TaskNumberRegister? = nil, found: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
         let fnd = found ?? rec.allocateRegister()
@@ -636,7 +637,7 @@ public struct TaskJSONOps {
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
     public func getFloat(_ body: TaskJSON, _ path: String,
-                         into: TaskFloatRegister? = nil, found: TaskNumberRegister? = nil) -> TaskFloatRegister {
+                         into: TaskFloatRegister? = nil, found: TaskNumberRegister? = nil) -> TaskFloat {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateFloatRegister()
         let fnd = found ?? rec.allocateRegister()
@@ -648,7 +649,7 @@ public struct TaskJSONOps {
     }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
-    public func bodyContains(_ body: TaskJSON, _ text: String, into: TaskBoolRegister? = nil) -> TaskBoolRegister {
+    public func bodyContains(_ body: TaskJSON, _ text: String, into: TaskBoolRegister? = nil) -> TaskBool {
         rec.selectJSON(body)
         let dst = into ?? TaskBoolRegister(rec.allocateRegister())
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.index & 0x0F]
@@ -658,7 +659,7 @@ public struct TaskJSONOps {
     }
     /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
     @discardableResult
-    public func getType(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func getType(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonType, dst.index & 0x0F]
@@ -668,7 +669,7 @@ public struct TaskJSONOps {
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
-    public func getSize(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func getSize(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonSize, dst.index & 0x0F]
@@ -725,7 +726,7 @@ public struct TaskStringOps {
     }
     /// `R` = byte length of the string.
     @discardableResult
-    public func length(_ s: TaskString, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func length(_ s: TaskString, into: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectString(s)
         let dst = into ?? rec.allocateRegister()
         rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringBodyLen, dst.index & 0x0F, Cmd.endSysEx])
@@ -733,7 +734,7 @@ public struct TaskStringOps {
     }
     /// `R` = (string == `value`) ? 1 : 0.
     @discardableResult
-    public func equals(_ s: TaskString, _ value: String, into: TaskBoolRegister? = nil) -> TaskBoolRegister {
+    public func equals(_ s: TaskString, _ value: String, into: TaskBoolRegister? = nil) -> TaskBool {
         rec.selectString(s)
         let dst = into ?? TaskBoolRegister(rec.allocateRegister())
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringEquals, dst.index & 0x0F]
@@ -743,7 +744,7 @@ public struct TaskStringOps {
     }
     /// `R` = (string contains `substring`) ? 1 : 0.
     @discardableResult
-    public func contains(_ s: TaskString, _ substring: String, into: TaskBoolRegister? = nil) -> TaskBoolRegister {
+    public func contains(_ s: TaskString, _ substring: String, into: TaskBoolRegister? = nil) -> TaskBool {
         rec.selectString(s)
         let dst = into ?? TaskBoolRegister(rec.allocateRegister())
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.index & 0x0F]
@@ -753,7 +754,7 @@ public struct TaskStringOps {
     }
     /// `R` = index of `substring` in the string, or `-1` if absent.
     @discardableResult
-    public func indexOf(_ s: TaskString, _ substring: String, into: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func indexOf(_ s: TaskString, _ substring: String, into: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectString(s)
         let dst = into ?? rec.allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringIndexOf, dst.index & 0x0F]
@@ -763,7 +764,7 @@ public struct TaskStringOps {
     }
     /// `R` = the string parsed as an integer (leading sign + digits); `R[found]` = 0/1.
     @discardableResult
-    public func toInt(_ s: TaskString, into: TaskNumberRegister? = nil, found: TaskNumberRegister? = nil) -> TaskNumberRegister {
+    public func toInt(_ s: TaskString, into: TaskNumberRegister? = nil, found: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectString(s)
         let dst = into ?? rec.allocateRegister()
         let fnd = found ?? rec.allocateRegister()

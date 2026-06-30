@@ -131,6 +131,11 @@ try await client.digitalWrite(pin: 13, high: false)// LOW
 // Write a whole 8-pin port at once (faster than 8 calls). Only .output pins move.
 // port 0 = pins 0–7; bit N of the mask = pin N (1 → HIGH).
 try await client.writeDigitalPort(0, pinMask: 0b0010_0000)  // pin 5 HIGH, rest LOW
+
+// Every live pin/channel call also accepts a typed identity for clarity — `.pin(n)`
+// (`FirmataPin`) and `.channel(n)` (`FirmataChannel`). The bare-UInt8 forms stay valid:
+try await client.setPinMode(.pin(13), mode: .output)
+try await client.digitalWrite(pin: .pin(13), high: true)    // same as pin: 13
 ```
 
 ```swift
@@ -385,7 +390,7 @@ try await client.uploadTask(id: 1) { board in
     // them straight into a comparison. Auto registers descend R15 → R0.
     let pressed: TaskBool   = board.digitalRead(pin: .pin(7))     // -> TaskBool
     let light:   TaskNumber = board.analogRead(channel: .channel(0))  // -> TaskNumber
-    board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // see §14
+    board.ifTrue(pressed) { $0.digitalWrite(pin: .pin(2), high: true) }   // see §14
     _ = light
 }
 ```
@@ -435,12 +440,12 @@ try await client.uploadTask(id: 1) { board in
     // (a) Compare two operands with a TaskComparison:
     //     .equal .notEqual .lessThan .greaterThan .lessOrEqual .greaterOrEqual
     board.ifTrue(.reg(0), .greaterThan, .number(512),
-        then:   { $0.digitalWrite(pin: 2, high: true) },     // runs if R0 > 512
-        elseDo: { $0.digitalWrite(pin: 2, high: false) })    // optional else
+        then:   { $0.digitalWrite(pin: .pin(2), high: true) },     // runs if R0 > 512
+        elseDo: { $0.digitalWrite(pin: .pin(2), high: false) })    // optional else
 
     // (b) Branch directly on a TaskBool (a predicate / digitalRead / compare / isValid):
     let pressed = board.digitalRead(pin: .pin(7))             // -> TaskBool
-    board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // "if true (non-zero)"
+    board.ifTrue(pressed) { $0.digitalWrite(pin: .pin(2), high: true) }   // "if true (non-zero)"
 }
 ```
 
@@ -450,8 +455,8 @@ try await client.uploadTask(id: 1) { board in
 // Backed by the firmware CMP op (0x27).
 try await client.uploadTask(id: 1) { board in
     let warm = board.compare(board.analogRead(channel: .channel(0)), .greaterThan, .number(2000)) // -> TaskBool
-    board.ifTrue(warm) { $0.digitalWrite(pin: 2, high: true) }
-    board.ifTrue(warm) { $0.digitalWrite(pin: 4, high: true) }   // reuse, no recompute
+    board.ifTrue(warm) { $0.digitalWrite(pin: .pin(2), high: true) }
+    board.ifTrue(warm) { $0.digitalWrite(pin: .pin(4), high: true) }   // reuse, no recompute
     // compare(_:_:_:into:) — pass `into:` to choose the result register yourself.
 }
 ```
@@ -520,8 +525,8 @@ try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
 
     board.ifTrue(spy.status, .equal, .number(200)) {           // only act on HTTP 200
         $0.ifTrue(pct, .greaterThan, .number(0),
-            then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
-            elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+            then:   { $0.digitalWrite(pin: .pin(2), high: true);  $0.digitalWrite(pin: .pin(4), high: false) },
+            elseDo: { $0.digitalWrite(pin: .pin(2), high: false); $0.digitalWrite(pin: .pin(4), high: true) })
     }
 }
 // httpPost in a task: board.httpPost(url, body: "…", statusInto: nil) -> TaskHTTPResponse
@@ -591,7 +596,7 @@ try await client.uploadTask(id: 7) { board in
 
     let aVal = board.json.getNumber(a.body, "price")      // from A (snapshot — still valid)
     let bVal = board.json.getNumber(b.body, "price")      // from B (live)
-    board.ifTrue(bVal, .greaterThan, aVal) { $0.digitalWrite(pin: 2, high: true) }
+    board.ifTrue(bVal, .greaterThan, aVal) { $0.digitalWrite(pin: .pin(2), high: true) }
 
     board.json.free(a.body)                            // release the snapshot slot (2 total)
 }
@@ -605,7 +610,7 @@ try await client.uploadTask(id: 8) { board in
     let c = board.httpGet(urlC)
     let price = board.json.getNumber(c.body, "price")
     board.ifTrue(c.body.isValid()) {                   // only trust the read if still fresh
-        $0.ifTrue(price, .greaterThan, .number(100)) { $0.digitalWrite(pin: 2, high: true) }
+        $0.ifTrue(price, .greaterThan, .number(100)) { $0.digitalWrite(pin: .pin(2), high: true) }
     }
 }
 ```
@@ -635,13 +640,13 @@ try await client.uploadTask(id: 9) { board in
     let same = board.string.equals(s, "42 ready")         // -> TaskBool
     let at   = board.string.indexOf(s, "ready")           // -> TaskNumber (index, or -1)
     let n    = board.string.toInt(s, found: .reg(9))      // -> TaskNumber (leading int) + found flag
-    board.ifTrue(ok) { $0.digitalWrite(pin: 2, high: true) }
+    board.ifTrue(ok) { $0.digitalWrite(pin: .pin(2), high: true) }
     board.string.free(s)                                   // release the slot when done
     _ = (len, same, at, n)
 
     // Standalone literal — no HTTP:
     let mode = board.string.createString("on")
-    board.ifTrue(board.string.equals(mode, "on")) { $0.digitalWrite(pin: 4, high: true) }
+    board.ifTrue(board.string.equals(mode, "on")) { $0.digitalWrite(pin: .pin(4), high: true) }
     mode.changeSlot(TaskStringSlot(9))                        // copy into a specific slot, rebind
     board.string.free(mode)
 }
@@ -763,10 +768,15 @@ final class TaskJSON {                    // a response-body handle (NOT an oper
 final class TaskString { /* a captured string, for board.string ops */ }
 struct TaskHTTPResponse { let status: TaskNumberRegister; let body: TaskJSON }
 
-struct TaskPin     { /* .pin(13)    */ }   // a board pin, by number (typed; never a bare Int)
+struct TaskPin     { /* .pin(13)    */ }   // a board pin, by number (typed; recorder/task API)
 struct TaskChannel { /* .channel(0) */ }   // an analog channel index A0=0… (typed; ≠ a pin)
 struct TaskJSONSlot   { /* TaskJSONSlot(0)   — JSON snapshot slot 0–1   */ }
 struct TaskStringSlot { /* TaskStringSlot(0) — string slot 0–9          */ }
+
+// Live-client typed identities (separate types from the recorder's Task* above):
+struct FirmataPin     { /* .pin(13)    */ }   // live FirmataClient pin
+struct FirmataChannel { /* .channel(0) */ }   // live FirmataClient analog channel
+// Live I/O takes bare UInt8 *or* these: client.digitalWrite(pin: 2, …) == client.digitalWrite(pin: .pin(2), …)
 
 enum TaskComparison: UInt8 { case equal, notEqual, lessThan, greaterThan, lessOrEqual, greaterOrEqual }
 enum TaskJSONValueType:  Int32  { case missing, object, array, string, number, bool, null }      // 0…6

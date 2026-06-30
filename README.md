@@ -175,13 +175,13 @@ try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
     board.setPinMode(.pin(2), mode: .output)
     board.analogRead(into: .reg(0), channel: .channel(0))           // R0 = analog A0
     board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
-        then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
-        elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
+        then:   { $0.digitalWrite(pin: .pin(2), high: true) },   // LED on
+        elseDo: { $0.digitalWrite(pin: .pin(2), high: false) })  // else off
 }
 ```
 
 - `setRegister(_:to:)`, `digitalRead(into:pin:)`, `analogRead(into:channel:)`. The
-  register-returning reads are **typed**: `digitalRead(pin:)` → `TaskBool`,
+  value-returning reads are **typed**: `digitalRead(pin:)` → `TaskBool`,
   `analogRead(channel:)` → `TaskNumber`.
 - `ifTrue(_:_:_:then:elseDo:)` — operands `.reg(0...15)` / `.number(value)`;
   comparisons `== != < > <= >=`. Forward-only (no loops), so a task can't hang the board.
@@ -209,8 +209,8 @@ try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
     let pct = board.json.getNumber(spy.body, "changePercent", scaledBy: 2)
     board.ifTrue(spy.status, .equal, .number(200)) {           // only act on success
         $0.ifTrue(pct, .greaterThan, .number(0),
-            then:   { $0.digitalWrite(pin: 2, high: true);  $0.digitalWrite(pin: 4, high: false) },
-            elseDo: { $0.digitalWrite(pin: 2, high: false); $0.digitalWrite(pin: 4, high: true) })
+            then:   { $0.digitalWrite(pin: .pin(2), high: true);  $0.digitalWrite(pin: .pin(4), high: false) },
+            elseDo: { $0.digitalWrite(pin: .pin(2), high: false); $0.digitalWrite(pin: .pin(4), high: true) })
     }
 }
 ```
