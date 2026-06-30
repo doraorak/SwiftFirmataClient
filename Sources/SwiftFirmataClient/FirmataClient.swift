@@ -959,3 +959,65 @@ public actor FirmataClient {
         return ref
     }
 }
+
+// MARK: - Typed pin / channel (live client)
+
+/// A board **pin**, by number — write it as `.pin(13)`. The live-client's typed pin
+/// identity, so a call never takes a bare integer where a pin is meant (distinct from a
+/// ``FirmataChannel``). This is the live-client analogue of the task recorder's ``TaskPin``;
+/// they're deliberately separate types for the two APIs.
+public struct FirmataPin: Sendable {
+    public let number: UInt8
+    public init(_ number: UInt8) { self.number = number }
+    /// A pin by number — `.pin(13)`.
+    public static func pin(_ number: UInt8) -> FirmataPin { FirmataPin(number) }
+}
+
+/// An **analog channel** index (`A0 = 0`, …) — write it as `.channel(0)`. The live-client's
+/// typed channel identity (distinct from a ``FirmataPin``); the analogue of the recorder's
+/// ``TaskChannel``.
+public struct FirmataChannel: Sendable {
+    public let index: UInt8
+    public init(_ index: UInt8) { self.index = index }
+    /// An analog channel by index — `.channel(0)`.
+    public static func channel(_ index: UInt8) -> FirmataChannel { FirmataChannel(index) }
+}
+
+// Convenience overloads that take ``FirmataPin`` / ``FirmataChannel`` (`.pin(13)` /
+// `.channel(0)`) for call-site clarity. They forward to the bare-`UInt8` versions, which
+// remain available unchanged (`client.digitalWrite(pin: 2, …)` and
+// `client.digitalWrite(pin: .pin(2), …)` both work).
+public extension FirmataClient {
+    /// Set a pin's mode — `.pin(13)`.
+    func setPinMode(_ pin: FirmataPin, mode: PinMode) async throws {
+        try await setPinMode(pin.number, mode: mode)
+    }
+    /// Drive an output pin HIGH/LOW — `.pin(2)`.
+    func digitalWrite(pin: FirmataPin, high: Bool) async throws {
+        try await digitalWrite(pin: pin.number, high: high)
+    }
+    /// One-shot digital read — `.pin(7)`.
+    func digitalRead(pin: FirmataPin, timeout: Duration = .seconds(2)) async throws -> Bool {
+        try await digitalRead(pin: pin.number, timeout: timeout)
+    }
+    /// PWM write — `.channel(3)`.
+    func analogWrite(channel: FirmataChannel, value: UInt16) async throws {
+        try await analogWrite(channel: channel.index, value: value)
+    }
+    /// Extended analog write (pins ≥ 16 / wide values) — `.pin(9)`.
+    func extendedAnalogWrite(pin: FirmataPin, value: Int32) async throws {
+        try await extendedAnalogWrite(pin: pin.number, value: value)
+    }
+    /// Enable/disable reporting for an analog channel — `.channel(0)`.
+    func reportAnalogChannel(_ channel: FirmataChannel, enable: Bool) async throws {
+        try await reportAnalogChannel(channel.index, enable: enable)
+    }
+    /// One-shot analog read — `.channel(0)`.
+    func analogRead(channel: FirmataChannel, timeout: Duration = .seconds(2)) async throws -> UInt16 {
+        try await analogRead(channel: channel.index, timeout: timeout)
+    }
+    /// Query a pin's current mode + value — `.pin(7)`.
+    func queryPinState(pin: FirmataPin) async throws -> PinState {
+        try await queryPinState(pin: pin.number)
+    }
+}

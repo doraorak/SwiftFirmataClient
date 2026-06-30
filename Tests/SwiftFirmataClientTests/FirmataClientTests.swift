@@ -52,6 +52,17 @@ struct FirmataClientTests {
         #expect(transport.lastSent == [0x90, 0x7F, 0x01])
     }
 
+    // The typed .pin/.channel overloads forward to the bare-UInt8 versions byte-for-byte.
+    @Test func typedPinChannelOverloadsMatchBare() async throws {
+        let (client, transport) = await makeClient()
+        try await client.setPinMode(.pin(13), mode: .output)
+        #expect(transport.lastSent == [0xF4, 13, PinMode.output.rawValue])
+        try await client.digitalWrite(pin: .pin(13), high: true)
+        #expect(transport.lastSent == [0xF5, 13, 0x01])
+        try await client.analogWrite(channel: .channel(3), value: 512)
+        #expect(transport.lastSent == [0xE3, 0x00, 0x04])    // 512 = 0x200 -> lo 0x00, hi 0x04
+    }
+
     @Test func reportDigitalPort() async throws {
         let (client, transport) = await makeClient()
         try await client.reportDigitalPort(1, enable: true)

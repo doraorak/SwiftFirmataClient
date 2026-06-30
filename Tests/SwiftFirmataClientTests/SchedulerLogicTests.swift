@@ -109,13 +109,13 @@ struct SchedulerLogicTests {
     @Test func nestedBranchAllocationDoesNotClobberOuter() {
         let r = FirmataTaskRecorder()
         let outer = r.analogRead(channel: .channel(0))            // -> R15
-        var inner: TaskNumberRegister?
+        var inner: (any TaskNumber)?
         r.ifTrue(outer, .greaterThan, .number(100)) {
             inner = $0.analogRead(channel: .channel(1))           // continues the cursor; must not reuse R15
         }
         let after = r.analogRead(channel: .channel(2))            // resumes past the branch's allocation
-        #expect(outer.index == 15)
-        #expect(inner?.index == 14)                     // distinct from outer (was 15 before the fix)
-        #expect(after.index == 13)
+        #expect((outer as? any TaskRegister)?.index == 15)
+        #expect((inner as? any TaskRegister)?.index == 14)        // distinct from outer (was 15 before the fix)
+        #expect((after as? any TaskRegister)?.index == 13)
     }
 }

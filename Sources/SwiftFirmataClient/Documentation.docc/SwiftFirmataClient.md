@@ -116,8 +116,8 @@ try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
     board.setPinMode(.pin(2), mode: .output)
     board.analogRead(into: .reg(0), channel: .channel(0))                 // R0 = analog A0
     board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
-        then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
-        elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
+        then:   { $0.digitalWrite(pin: .pin(2), high: true) },   // LED on
+        elseDo: { $0.digitalWrite(pin: .pin(2), high: false) })  // else off
 }
 ```
 
