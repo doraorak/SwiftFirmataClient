@@ -112,9 +112,8 @@ struct InternetActionTests {
     // MARK: - Float registers / arithmetic / jsonFloat
 
     @Test func setFloatEncoding() {
-        var r = FirmataTaskRecorder()
-        let f = r.setFloatRegister(.freg(2), to: .float(1.5))
-        #expect(f.index == 2)
+        let r = FirmataTaskRecorder()
+        r.setFloatRegister(.freg(2), to: .float(1.5))
         let bits = Float(1.5).bitPattern
         let expected: [UInt8] = [0xF0, 0x7B, 0x7F, 0x1B, 2]
             + encode7BitFirmata(timeBytes(bits)) + [0xF7]

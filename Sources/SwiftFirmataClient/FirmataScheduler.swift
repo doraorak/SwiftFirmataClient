@@ -529,16 +529,15 @@ public final class FirmataTaskRecorder {
 
     // MARK: Float registers (8 of them, F0–F7)
 
-    /// Record `F[dst] = value`. Returns it as a ``TaskFloat`` operand for chaining.
+    /// Record `F[dst] = value` — load a `Float` constant into a float register.
+    /// (Mirrors ``setRegister(_:to:)`` for the integer registers.)
     /// - Parameters:
     ///   - dst: Destination float register — `.freg(0)`.
     ///   - value: The `Float` constant to store — `.float(100.0)`.
-    @discardableResult
-    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral) -> TaskFloat {
+    public func setFloatRegister(_ dst: TaskFloatRegister, to value: TaskFloatLiteral) {
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSetFloat, dst.index & 0x07]
         m += encode7BitFirmata(timeBytes(value.rawValue.bitPattern))
         m.append(Cmd.endSysEx); bytes += m
-        return dst
     }
 
     /// Record `F[dst] = a + b` (float). Operands may be float/int registers or
