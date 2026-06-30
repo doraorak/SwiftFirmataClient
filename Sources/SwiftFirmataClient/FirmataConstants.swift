@@ -124,16 +124,16 @@ internal enum Sched {
     internal static let extHttp:        UInt8 = 0x15  // make an HTTP(S) request over Wi-Fi
     // Response-inspection ops (operate on the last HTTP response body):
     internal static let extJsonNum:     UInt8 = 0x16  // R[dst] = json number at path ×10^scale; R[found]
-    internal static let extJsonStrEq:   UInt8 = 0x17  // R[dst] = (json string at path == s) ? 1 : 0
     internal static let extBodyContains: UInt8 = 0x18 // R[dst] = body contains s ? 1 : 0
-    internal static let extJsonStrContains: UInt8 = 0x19 // R[dst] = (json string at path contains s) ? 1 : 0
+    // 0x17 / 0x19 are firmware ops (json-string-at-path == / contains) the client doesn't
+    // emit — reachable via getString + string.equals/contains. Reserved; don't reuse.
     internal static let extArith:       UInt8 = 0x1A  // R[dst] = A <op> B  (op: 0+ 1- 2* 3/ 4%)
     internal static let extSetFloat:    UInt8 = 0x1B  // F[dst] = float const
     internal static let extArithFloat:      UInt8 = 0x1C  // F[dst] = A <op> B  (float; op 0+ 1- 2* 3/)
     internal static let extJsonFloat:   UInt8 = 0x1D  // F[dst] = json float at path; R[found]
     internal static let extJsonType:    UInt8 = 0x1E  // R[dst] = json type at path
     internal static let extJsonSize:    UInt8 = 0x1F  // R[dst] = byte length of value span at path
-    internal static let extStringLen:   UInt8 = 0x20  // R[dst] = content length of json string at path (unused by client)
+    // 0x20 is a firmware-only string-length op the client doesn't emit. Reserved; don't reuse.
     internal static let extHeap:        UInt8 = 0x21  // R[freeReg]=free heap, R[largestReg]=largest block
     internal static let extRequestCount:     UInt8 = 0x22  // R[dst] = current request count (internal)
     internal static let extSnapshot:    UInt8 = 0x23  // copy value at path from live body into a slot
@@ -149,4 +149,6 @@ internal enum Sched {
     internal static let extJsonGetString: UInt8 = 0x2C  // copy a JSON string's content at path into a string slot
     internal static let extStringSetSlot: UInt8 = 0x2D  // set a string slot's content to a literal string (createString)
     internal static let extStringCopySlot: UInt8 = 0x2E  // copy one string slot's content into another (changeSlot)
+    internal static let extI2CRead:     UInt8 = 0x2F  // R[dst] = bytes read from an I2C device, big-endian (i2cRead)
+    internal static let extEmitString:  UInt8 = 0x30  // device -> host STRING_DATA from a running task (sendString)
 }
