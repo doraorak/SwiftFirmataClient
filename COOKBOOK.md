@@ -291,10 +291,10 @@ closure, and one `await uploadTask(...)` ships the whole program.
 ```swift
 // Blink pin 2 every 500 ms, entirely on the board — survives disconnect.
 try await client.uploadTask(id: 2, startDelay: .zero, repeatEvery: .milliseconds(500)) { board in
-    board.setPinMode(2, mode: .output)   // recorded, not sent now
-    board.digitalWrite(pin: 2, high: true)
+    board.setPinMode(.pin(2), mode: .output)   // recorded, not sent now
+    board.digitalWrite(pin: .pin(2), high: true)
     board.delay(.milliseconds(500))                 // the BOARD waits here while running
-    board.digitalWrite(pin: 2, high: false)
+    board.digitalWrite(pin: .pin(2), high: false)
 }
 await client.disconnect()                // the LED keeps blinking
 ```
@@ -302,8 +302,8 @@ await client.disconnect()                // the LED keeps blinking
 ```swift
 // One-shot (no repeat): runs once, then the task is removed.
 try await client.uploadTask(id: 5) { board in
-    board.setPinMode(2, mode: .output)
-    board.digitalWrite(pin: 2, high: true)
+    board.setPinMode(.pin(2), mode: .output)
+    board.digitalWrite(pin: .pin(2), high: true)
 }
 
 // Parameters:
@@ -348,10 +348,10 @@ live calls but **capture bytes** instead of sending — so they're synchronous (
 ```swift
 try await client.uploadTask(id: 1) { board in
     // Digital / PWM / timing — same shapes as the live client:
-    board.setPinMode(2, mode: .output)
-    board.digitalWrite(pin: 2, high: true)
+    board.setPinMode(.pin(2), mode: .output)
+    board.digitalWrite(pin: .pin(2), high: true)
     board.writeDigitalPort(0, pinMask: 0xFF)
-    board.analogWrite(channel: 3, value: 200)
+    board.analogWrite(channel: .channel(3), value: 200)
     board.delay(.milliseconds(1000))                       // the board waits here while running
 
     // I2C from a task (drive an OLED etc. with no host connected):
@@ -374,17 +374,17 @@ they're unrelated to an I2C peripheral's `registerAddress` in §7, which just sh
 ```swift
 try await client.uploadTask(id: 1) { board in
     // Load a constant into a register you name:
-    board.setRegister(.reg(3), to: 512)               // R3 = 512
+    board.setRegister(.reg(3), to: .number(512))               // R3 = 512
 
     // Reads INTO a register you choose:
-    board.setPinMode(7, mode: .input)
-    board.digitalRead(into: .boolReg(1), pin: 7)          // R1 = digitalRead(7)  (0/1)
-    board.analogRead(into: .reg(2), channel: 0)       // R2 = analogRead(A0)  (channel index!)
+    board.setPinMode(.pin(7), mode: .input)
+    board.digitalRead(into: .boolReg(1), pin: .pin(7))          // R1 = digitalRead(7)  (0/1)
+    board.analogRead(into: .reg(2), channel: .channel(0))       // R2 = analogRead(A0)  (channel index!)
 
     // Reads that RETURN an auto-allocated register as a typed operand, so you can drop
     // them straight into a comparison. Auto registers descend R15 → R0.
-    let pressed: TaskBool   = board.digitalRead(pin: 7)     // -> TaskBool
-    let light:   TaskNumber = board.analogRead(channel: 0)  // -> TaskNumber
+    let pressed: TaskBool   = board.digitalRead(pin: .pin(7))     // -> TaskBool
+    let light:   TaskNumber = board.analogRead(channel: .channel(0))  // -> TaskNumber
     board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // see §14
     _ = light
 }
@@ -416,7 +416,7 @@ let r3 = TaskOperand.reg(3)        // int register R3 as an operand
 let f0 = TaskOperand.freg(0)       // float register F0 as an operand
 
 // Because these types all conform to TaskOperand, a typed result flows into any op:
-//   board.ifTrue(board.analogRead(channel: 0), .greaterThan, .number(512)) { … }
+//   board.ifTrue(board.analogRead(channel: .channel(0)), .greaterThan, .number(512)) { … }
 // If either side of a comparison/op is a float, the device promotes to float.
 ```
 
@@ -429,8 +429,8 @@ are themselves recorder closures and may nest. *Forward-only — a task can't lo
 
 ```swift
 try await client.uploadTask(id: 1) { board in
-    board.setPinMode(2, mode: .output)
-    board.analogRead(into: .reg(0), channel: 0)               // R0 = A0
+    board.setPinMode(.pin(2), mode: .output)
+    board.analogRead(into: .reg(0), channel: .channel(0))               // R0 = A0
 
     // (a) Compare two operands with a TaskComparison:
     //     .equal .notEqual .lessThan .greaterThan .lessOrEqual .greaterOrEqual
@@ -439,7 +439,7 @@ try await client.uploadTask(id: 1) { board in
         elseDo: { $0.digitalWrite(pin: 2, high: false) })    // optional else
 
     // (b) Branch directly on a TaskBool (a predicate / digitalRead / compare / isValid):
-    let pressed = board.digitalRead(pin: 7)             // -> TaskBool
+    let pressed = board.digitalRead(pin: .pin(7))             // -> TaskBool
     board.ifTrue(pressed) { $0.digitalWrite(pin: 2, high: true) }   // "if true (non-zero)"
 }
 ```
@@ -449,7 +449,7 @@ try await client.uploadTask(id: 1) { board in
 // and branch on it several times (instead of repeating the comparison inline).
 // Backed by the firmware CMP op (0x27).
 try await client.uploadTask(id: 1) { board in
-    let warm = board.compare(board.analogRead(channel: 0), .greaterThan, .number(2000)) // -> TaskBool
+    let warm = board.compare(board.analogRead(channel: .channel(0)), .greaterThan, .number(2000)) // -> TaskBool
     board.ifTrue(warm) { $0.digitalWrite(pin: 2, high: true) }
     board.ifTrue(warm) { $0.digitalWrite(pin: 4, high: true) }   // reuse, no recompute
     // compare(_:_:_:into:) — pass `into:` to choose the result register yourself.
@@ -476,7 +476,7 @@ try await client.uploadTask(id: 1) { board in
     board.add(.reg(0), .number(5), into: .reg(0))
 
     // Float ops → TaskFloat. 8 float registers F0–F7. ints promote to float.
-    board.setFloatRegister(.freg(0), to: 100.0)                // F0 = 100.0
+    board.setFloatRegister(.freg(0), to: .float(100.0))                // F0 = 100.0
     let scaled = board.multiplyFloat(.freg(0), .float(1.5))   // F? = F0 * 1.5
     let added  = board.addFloat(scaled, .float(0.25))
     let sub    = board.subtractFloat(added, .float(0.1))
@@ -512,7 +512,7 @@ The full body is retained on the device for inspection — no host needed.
 ```swift
 // Every minute: green LED if SPY is up on the day, red if down — no host connected.
 try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
-    board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
+    board.setPinMode(.pin(2), mode: .output); board.setPinMode(.pin(4), mode: .output)
 
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled ×100 (so -0.42 → -42).
@@ -762,6 +762,11 @@ final class TaskJSON {                    // a response-body handle (NOT an oper
 }
 final class TaskString { /* a captured string, for board.string ops */ }
 struct TaskHTTPResponse { let status: TaskNumberRegister; let body: TaskJSON }
+
+struct TaskPin     { /* .pin(13)    */ }   // a board pin, by number (typed; never a bare Int)
+struct TaskChannel { /* .channel(0) */ }   // an analog channel index A0=0… (typed; ≠ a pin)
+struct TaskJSONSlot   { /* TaskJSONSlot(0)   — JSON snapshot slot 0–1   */ }
+struct TaskStringSlot { /* TaskStringSlot(0) — string slot 0–9          */ }
 
 enum TaskComparison: UInt8 { case equal, notEqual, lessThan, greaterThan, lessOrEqual, greaterOrEqual }
 enum TaskJSONValueType:  Int32  { case missing, object, array, string, number, bool, null }      // 0…6
