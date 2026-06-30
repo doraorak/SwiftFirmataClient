@@ -113,11 +113,11 @@ final class MockTransport: FirmataTransport, @unchecked Sendable {
     }
 
     /// Inject an I2C_REPLY SysEx.
-    func injectI2CReply(address: UInt16, register: UInt16, data: [UInt8]) {
+    func injectI2CReply(address: UInt16, registerAddress: UInt16, data: [UInt8]) {
         var bytes: [UInt8] = [
             0xF0, 0x77,
             UInt8(address & 0x7F), UInt8((address >> 7) & 0x07),
-            UInt8(register & 0x7F), UInt8((register >> 7) & 0x7F),
+            UInt8(registerAddress & 0x7F), UInt8((registerAddress >> 7) & 0x7F),
         ]
         for b in data {
             bytes.append(b & 0x7F)

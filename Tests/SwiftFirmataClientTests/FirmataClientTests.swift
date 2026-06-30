@@ -201,7 +201,7 @@ struct FirmataClientTests {
         let (client, transport) = await makeClient()
         async let reply = client.i2cReadOnce(address: 0x48, count: 2)
         await Task.yield()
-        transport.injectI2CReply(address: 0x48, register: 0, data: [0x12, 0x34])
+        transport.injectI2CReply(address: 0x48, registerAddress: 0, data: [0x12, 0x34])
         let r = try await reply
         #expect(r.address == 0x48)
         #expect(r.data == [0x12, 0x34])

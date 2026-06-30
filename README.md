@@ -128,7 +128,7 @@ Task {
 ```swift
 try await client.configureI2C()
 try await client.i2cWrite(address: 0x3C, data: [0x00, 0xAE])      // e.g. SSD1306 display-off
-let reply = try await client.i2cReadOnce(address: 0x48, register: 0x00, count: 2)
+let reply = try await client.i2cReadOnce(address: 0x48, registerAddress: 0x00, count: 2)
 print(reply.data)
 ```
 
@@ -140,11 +140,11 @@ Scheduler, SysEx `0x7B`). Build a task with the recorder, upload it, and leave:
 
 ```swift
 // Blink pin 2 every 250 ms — forever, with no client connected.
-try await client.uploadTask(id: 1, repeatEvery: .milliseconds(250)) { t in
-    t.setPinMode(2, mode: .output)
-    t.digitalWrite(pin: 2, high: true)
-    t.delay(.milliseconds(250))
-    t.digitalWrite(pin: 2, high: false)
+try await client.uploadTask(id: 1, repeatEvery: .milliseconds(250)) { board in
+    board.setPinMode(2, mode: .output)
+    board.digitalWrite(pin: 2, high: true)
+    board.delay(.milliseconds(250))
+    board.digitalWrite(pin: 2, high: false)
 }
 await client.disconnect()          // the board keeps blinking
 ```
@@ -171,10 +171,10 @@ branch with `ifTrue`:
 
 ```swift
 // A night-light running entirely on the board, no client connected.
-try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { t in
-    t.setPinMode(2, mode: .output)
-    t.analogRead(into: .reg(0), channel: 0)           // R0 = analog A0
-    t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
+    board.setPinMode(2, mode: .output)
+    board.analogRead(into: .reg(0), channel: 0)           // R0 = analog A0
+    board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
@@ -201,7 +201,7 @@ certificate validation** (a browser-style root-CA bundle).
 
 ```swift
 // Every minute: green LED if SPY is up on the day, red if it's down — no host.
-try await client.uploadTask(id: 5, repeatEvery: .milliseconds(60_000)) { board in
+try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
     board.setPinMode(2, mode: .output); board.setPinMode(4, mode: .output)
     let spy = board.httpGet("https://example.com/quote/SPY")   // -> TaskHTTPResponse
     // Pull a fractional JSON number into an Int32 register, scaled (×100):
@@ -429,7 +429,7 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 | Analog | `analogWrite(channel:value:)`, `extendedAnalogWrite(pin:value:)`, `reportAnalogPin(_:enable:)` |
 | Queries | `queryProtocolVersion()`, `queryFirmware()`, `queryCapabilities()`, `queryAnalogMapping()`, `queryPinState(pin:)` |
 | System | `systemReset()`, `setSamplingInterval(_:)`, `sendString(_:)` |
-| I2C | `configureI2C(delay:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:register:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
+| I2C | `configureI2C(delay:)`, `i2cWrite(address:data:)`, `i2cReadOnce(address:registerAddress:count:)`, `i2cStartReading(...)`, `i2cStopReading(address:)` |
 | Live reads | `digitalRead(pin:timeout:) -> Bool`, `analogRead(channel:timeout:) -> UInt16` |
 | Scheduler | `uploadTask(id:startDelay:repeatEvery:_:)`, `createTask(id:length:)`, `addToTask(id:data:)`, `scheduleTask(id:delay:)`, `deleteTask(id:)`, `resetTasks()`, `queryAllTasks()`, `queryTask(id:)` |
 | **Extension¹** — internet | `httpGet(_:timeout:) -> HTTPResponse`, `httpPost(_:body:timeout:) -> HTTPResponse` |

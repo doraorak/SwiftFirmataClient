@@ -80,20 +80,20 @@ Use ``FirmataClient/uploadTask(id:startDelay:repeatEvery:_:)`` with a
 
 ```swift
 // Blink pin 2 forever, 400 ms on / 400 ms off — survives disconnect.
-try await client.uploadTask(id: 2, repeatEvery: .milliseconds(400)) { t in
-    t.setPinMode(2, mode: .output)
-    t.digitalWrite(pin: 2, high: true)
-    t.delay(.milliseconds(400))
-    t.digitalWrite(pin: 2, high: false)
+try await client.uploadTask(id: 2, repeatEvery: .milliseconds(400)) { board in
+    board.setPinMode(2, mode: .output)
+    board.digitalWrite(pin: 2, high: true)
+    board.delay(.milliseconds(400))
+    board.digitalWrite(pin: 2, high: false)
 }
 // ...later:
 try await client.deleteTask(id: 2)
 ```
 
-> Tip: `{ t in … }` is a closure whose parameter `t` **is** the
-> ``FirmataTaskRecorder``. You call `t.setPinMode(…)`, `t.digitalWrite(…)`,
-> `t.delay(…)` on it to record steps — nothing is sent until `uploadTask` ships
-> the whole recording. The name `t` is arbitrary.
+> Tip: `{ board in … }` is a closure whose parameter `board` **is** the
+> ``FirmataTaskRecorder``. You call `board.setPinMode(…)`, `board.digitalWrite(…)`,
+> `board.delay(…)` on it to record steps — nothing is sent until `uploadTask` ships
+> the whole recording. The name `board` is just a convention.
 
 ### On-device logic (scheduler extension)
 
@@ -112,10 +112,10 @@ sequence. The device has **16 global Int32 registers**; you load values into the
 
 ```swift
 // A night-light running entirely on the board, with nobody connected.
-try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { t in
-    t.setPinMode(2, mode: .output)
-    t.analogRead(into: 0, channel: 0)                 // R0 = analog A0
-    t.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(1000)) { board in
+    board.setPinMode(2, mode: .output)
+    board.analogRead(into: .reg(0), channel: 0)                 // R0 = analog A0
+    board.ifTrue(.reg(0), .lessThan, .number(300),        // dark?
         then:   { $0.digitalWrite(pin: 2, high: true) },   // LED on
         elseDo: { $0.digitalWrite(pin: 2, high: false) })  // else off
 }
