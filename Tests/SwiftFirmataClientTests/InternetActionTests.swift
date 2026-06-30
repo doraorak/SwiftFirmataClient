@@ -160,7 +160,7 @@ struct InternetActionTests {
     // MARK: - Query ops (jsonType / jsonSize / heapStats)
 
     @Test func queryOpEncoding() {
-        for (op, build): (UInt8, (FirmataTaskRecorder, TaskJSON) -> Void) in [
+        for (op, build): (UInt8, (FirmataTaskRecorder, TaskResponseBody) -> Void) in [
             (0x1E, { _ = $0.json.getType($1, "p", into: .reg(3)) }),
             (0x1F, { _ = $0.json.getSize($1, "p", into: .reg(3)) }),
         ] {
@@ -211,7 +211,7 @@ struct InternetActionTests {
 
     @Test func i2cRecorderEncoding() {
         var r = FirmataTaskRecorder()
-        r.i2cConfig()
+        r.configureI2C()
         #expect(r.bytes == [0xF0, 0x78, 0x00, 0x00, 0xF7])
         var w = FirmataTaskRecorder()
         w.i2cWrite(address: 0x3C, data: [0x00, 0xAE])   // SSD1306 @0x3C: control 0x00, cmd 0xAE
@@ -269,12 +269,6 @@ struct InternetActionTests {
         r.json.snapshot(resp.body)            // owned -> always valid
         let v = resp.body.isValid()
         #expect(v.index == nil)           // a literal true, not a register read
-    }
-
-    @Test func taskResultStatusRawValues() {
-        #expect(TaskResultStatus.ok.rawValue == 0)
-        #expect(TaskResultStatus.stale.rawValue == 2)
-        #expect(TaskResultStatus.allocFailed.rawValue == 5)
     }
 
     // MARK: - board.json namespace (selects the handle's source, then inspects)

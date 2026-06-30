@@ -360,7 +360,7 @@ try await client.uploadTask(id: 1) { board in
     board.delay(.milliseconds(1000))                       // the board waits here while running
 
     // I2C from a task (drive an OLED etc. with no host connected):
-    board.i2cConfig(delay: .microseconds(0))       // begin the bus (once)
+    board.configureI2C(delay: .microseconds(0))       // begin the bus (once)
     board.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
     // (no i2c reads in a task — their reply would have no host to receive it)
 }
@@ -407,7 +407,7 @@ types carry the *static type* so the API tells you what a value is:
 | `TaskNumber` | `.number(_)`, `.reg(_)`, arithmetic, `json.getNumber/getType/getSize`, `string.length/indexOf/toInt` | Int32 value / register |
 | `TaskFloat` | `.float(_)`, `.freg(_)`, float arithmetic, `json.getFloat` | Float value / register |
 | `TaskBool` | `.bool(_)`, `compare(…)`, `digitalRead(pin:)`, `json.bodyContains`, `string.equals/contains`, `isValid()` | 0/1 result |
-| `TaskJSON` | `response.body`, `board.json.snapshot` | a response-body handle (not a comparable value) |
+| `TaskResponseBody` | `response.body`, `board.json.snapshot` | a response-body handle (not a comparable value) |
 | `TaskString` | `json.getString`, `string.createString` | a captured string value, for the `board.string` ops |
 
 ```swift
@@ -511,7 +511,7 @@ try await client.uploadTask(id: 1) { board in
 ## 17. Internet inside a task
 
 `httpGet`/`httpPost` recorded into a task return a **`TaskHTTPResponse`**: branch on
-`.status`, and pass `.body` (a `TaskJSON`) to the `board.json` inspection ops (§18).
+`.status`, and pass `.body` (a `TaskResponseBody`) to the `board.json` inspection ops (§18).
 The full body is retained on the device for inspection — no host needed.
 
 ```swift
@@ -546,7 +546,7 @@ a typed result register. `path` is dotted/indexed:
 ```swift
 try await client.uploadTask(id: 6) { board in
     let r = board.httpGet("https://example.com/data")
-    let body = r.body                                // TaskJSON handle (§19)
+    let body = r.body                                // TaskResponseBody handle (§19)
 
     // Numbers:
     let n  = board.json.getNumber(body, "count")                 // -> TaskNumber
@@ -558,8 +558,8 @@ try await client.uploadTask(id: 6) { board in
     let raw    = board.json.bodyContains(body, "\"halted\":true")
 
     // Shape checks before extracting:
-    let kind = board.json.getType(body, "result[0]")    // -> TaskNumber (TaskJSONValueType raw)
-    board.ifTrue(kind, .equal, .number(TaskJSONValueType.number.rawValue)) { _ in /* it's a number */ }
+    let kind = board.json.getType(body, "result[0]")    // -> TaskJSONType (typed)
+    board.ifTrue(kind, is: .number) { _ in /* the value at that path is a number */ }
     let span = board.json.getSize(body, "result")       // byte length of the value span
 
     // String *values*: navigate with getString, then use board.string (next section).
@@ -571,8 +571,9 @@ try await client.uploadTask(id: 6) { board in
 ```
 
 ```swift
-// TaskJSONValueType raw values (compare against json.type results):
-//   .missing 0  .object 1  .array 2  .string 3  .number 4  .bool 5  .null 6
+// getType returns a typed TaskJSONType — branch on it with ifTrue(_:is:):
+//   board.ifTrue(kind, is: .string) { … }
+// TaskJSONValueType cases: .missing .object .array .string .number .bool .null
 ```
 
 For **string values**, navigate with `board.json.getString` → a `TaskString`, then use the
@@ -762,11 +763,11 @@ protocol TaskOperand { /* base */ }
 protocol TaskNumber: TaskOperand {}      // .number(_) / .reg(_)  (TaskNumberLiteral / TaskNumberRegister)
 protocol TaskFloat:  TaskOperand {}      // .float(_)  / .freg(_) (TaskFloatLiteral / TaskFloatRegister)
 protocol TaskBool:   TaskOperand {}      // .bool(_)   / compare / predicates / isValid()
-final class TaskJSON {                    // a response-body handle (NOT an operand)
+final class TaskResponseBody {                    // a response-body handle (NOT an operand)
     func isValid() -> TaskBool
 }
 final class TaskString { /* a captured string, for board.string ops */ }
-struct TaskHTTPResponse { let status: TaskNumberRegister; let body: TaskJSON }
+struct TaskHTTPResponse { let status: TaskNumberRegister; let body: TaskResponseBody }
 
 struct TaskPin     { /* .pin(13)    */ }   // a board pin, by number (typed; recorder/task API)
 struct TaskChannel { /* .channel(0) */ }   // an analog channel index A0=0… (typed; ≠ a pin)
@@ -778,9 +779,10 @@ struct FirmataPin     { /* .pin(13)    */ }   // live FirmataClient pin
 struct FirmataChannel { /* .channel(0) */ }   // live FirmataClient analog channel
 // Live I/O takes bare UInt8 *or* these: client.digitalWrite(pin: 2, …) == client.digitalWrite(pin: .pin(2), …)
 
+struct TaskJSONType { /* board.json.getType result; ifTrue(_, is: .string); is-a TaskNumber */ }
+
 enum TaskComparison: UInt8 { case equal, notEqual, lessThan, greaterThan, lessOrEqual, greaterOrEqual }
 enum TaskJSONValueType:  Int32  { case missing, object, array, string, number, bool, null }      // 0…6
-enum TaskResultStatus:   Int32  { case ok, notFound, stale, typeMismatch, tooBig, allocFailed }  // 0…5
 ```
 
 > **Live vs. recorder.** `client.digitalRead(pin:)` / `analogRead(channel:)` return a

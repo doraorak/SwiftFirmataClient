@@ -218,7 +218,7 @@ try await client.uploadTask(id: 5, repeatEvery: .seconds(60)) { board in
 - `httpGet(_:)` / `httpPost(_:body:)` **return a `TaskHTTPResponse`** — branch on
   `resp.status` (HTTP status; `0` = Wi-Fi down / failure). Status register
   auto-allocates (or pass `statusInto:`). The body is retained for inspection via `resp.body`.
-- **`board.json` ops** take the body handle (`resp.body`, a `TaskJSON`) and return a
+- **`board.json` ops** take the body handle (`resp.body`, a `TaskResponseBody`) and return a
   **typed** result operand (auto-allocated R15↓ or via `into:`). They select the body's
   source automatically (no manual step):
   - `json.getNumber(body, path, scaledBy:)` → `TaskNumber` (number × 10ⁿ, truncated; also
@@ -437,7 +437,7 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 
 `FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
 `digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(_:)`, plus
-**I2C** `i2cConfig(delay:)` / `i2cWrite(address:data:is10Bit:)` (drive an
+**I2C** `configureI2C(delay:)` / `i2cWrite(address:data:is10Bit:)` (drive an
 I2C device — e.g. an SSD1306 OLED — from a task) — plus the
 **extension¹** ops: `setRegister`, `digitalRead(into:)`/`digitalRead(pin:)`,
 `analogRead(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,

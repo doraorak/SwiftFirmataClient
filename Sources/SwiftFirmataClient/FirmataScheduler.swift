@@ -135,7 +135,7 @@ public final class FirmataTaskRecorder {
     ///   - channel: The PWM channel — `.channel(3)` (the pin number for pins 0-15).
     ///   - value: Duty cycle within the pin's PWM resolution (e.g. `0`-`255`).
     public func analogWrite(channel: TaskChannel, value: UInt16) {
-        bytes += [Cmd.analogMessage | (channel.index & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
+        bytes += [Cmd.analogMessage | (channel.number & 0x0F), UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)]
     }
 
     /// Record a pause — the device waits this long before the next recorded action.
@@ -154,14 +154,14 @@ public final class FirmataTaskRecorder {
     //
     // The scheduler replays these through the device's Firmata parser, so a task
     // can talk to an I2C peripheral (e.g. write command/data bytes to an SSD1306
-    // OLED) with no host connected. Call `i2cConfig` once (it begins the bus),
+    // OLED) with no host connected. Call `configureI2C` once (it begins the bus),
     // then `i2cWrite` as needed. (Reads aren't offered here — their reply has no
     // host to receive it inside an autonomous task.)
 
     /// Record an I2C bus config/begin (`delay` between a register-write and the
     /// following read; truncated to whole microseconds). Do this once at the start of
     /// a task that uses I2C.
-    public func i2cConfig(delay: Duration = .zero) {
+    public func configureI2C(delay: Duration = .zero) {
         let us = delay.firmataMicroseconds
         bytes += [Cmd.startSysEx, SysEx.i2cConfig,
                   UInt8(us & 0x7F), UInt8((us >> 7) & 0x7F),
@@ -223,7 +223,7 @@ public final class FirmataTaskRecorder {
     ///   - channel: Analog channel — `.channel(0)` (`A0 = 0`, …).
     public func analogRead(into register: TaskNumberRegister, channel: TaskChannel) {
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extAnalogRead,
-                  register.index & 0x0F, channel.index & 0x0F, Cmd.endSysEx]
+                  register.index & 0x0F, channel.number & 0x0F, Cmd.endSysEx]
     }
 
     /// Record `digitalRead(pin)` into an **auto-allocated** register and return that
@@ -373,6 +373,23 @@ public final class FirmataTaskRecorder {
         ifTrue(condition, .notEqual, .number(0), then: then, elseDo: elseDo)
     }
 
+    /// Record an `if` that branches on a JSON value **kind** from
+    /// ``TaskJSONOps/getType(_:_:into:)`` — compared typed against a ``TaskJSONValueType``
+    /// (e.g. `is: .string`), rather than a raw number. Shorthand for `== type.rawValue`.
+    ///
+    /// ```swift
+    /// let kind = board.json.getType(resp.body, "result")
+    /// board.ifTrue(kind, is: .string) { $0.digitalWrite(pin: .pin(2), high: true) }
+    /// ```
+    public func ifTrue(
+        _ kind: TaskJSONType,
+        is type: TaskJSONValueType,
+        then: (FirmataTaskRecorder) -> Void,
+        elseDo: ((FirmataTaskRecorder) -> Void)? = nil
+    ) {
+        ifTrue(kind, .equal, .number(type.rawValue), then: then, elseDo: elseDo)
+    }
+
     /// Record `R[dst] = (a op b) ? 1 : 0` and return it as a **reusable boolean** — store
     /// it once and branch on it (possibly several times) with ``ifTrue(_:then:elseDo:)``,
     /// instead of repeating the comparison inline. Operands may be registers or literals;
@@ -449,14 +466,14 @@ public final class FirmataTaskRecorder {
         let gReg = allocateGenRegister()
         bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, gReg.index & 0x0F, Cmd.endSysEx]
         return TaskHTTPResponse(status: statusReg,
-                                body: TaskJSON(genReg: gReg, snapshotSlot: nil, rec: self))
+                                body: TaskResponseBody(genReg: gReg, snapshotSlot: nil, rec: self))
     }
 
     // MARK: Handle lifecycle — typed select / snapshot / free
 
     /// Select the JSON body source for the next inspection op: an owned snapshot slot, or
     /// the live body checked for staleness against the handle's captured generation.
-    internal func selectJSON(_ body: TaskJSON) {
+    internal func selectJSON(_ body: TaskResponseBody) {
         if let slot = body.snapshotSlot {
             emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSelect,
                   slot.firmwareIndex + 1, 0x00, Cmd.endSysEx])
@@ -473,7 +490,7 @@ public final class FirmataTaskRecorder {
     }
 
     /// Read the device's current request count (body generation) into a register.
-    /// Used by ``TaskJSON/isValid()`` to compare against a handle's captured generation.
+    /// Used by ``TaskResponseBody/isValid()`` to compare against a handle's captured generation.
     internal func currentRequestCount(into: TaskNumberRegister? = nil) -> TaskNumber {
         let dst = into ?? allocateRegister()
         emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extRequestCount, dst.index & 0x0F, Cmd.endSysEx])
@@ -614,7 +631,7 @@ public final class FirmataTaskRecorder {
 }
 
 /// JSON inspection of a recorded response body (reached via ``FirmataTaskRecorder/json``).
-/// Each call takes a ``TaskJSON`` (from ``TaskHTTPResponse/body`` or ``TaskJSONOps/snapshot(_:into:)``):
+/// Each call takes a ``TaskResponseBody`` (from ``TaskHTTPResponse/body`` or ``TaskJSONOps/snapshot(_:into:)``):
 /// it selects that source on the device — a snapshot, or the live body checked for staleness
 /// against the handle's generation — then records the op. Branch on results with `board.ifTrue`.
 public struct TaskJSONOps {
@@ -622,7 +639,7 @@ public struct TaskJSONOps {
 
     /// `R` = number at `path` × 10^`scaledBy` (truncated; also parses quoted numbers).
     @discardableResult
-    public func getNumber(_ body: TaskJSON, _ path: String, scaledBy: UInt8 = 0,
+    public func getNumber(_ body: TaskResponseBody, _ path: String, scaledBy: UInt8 = 0,
                           into: TaskNumberRegister? = nil, found: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
@@ -635,7 +652,7 @@ public struct TaskJSONOps {
     }
     /// `F` = floating-point number at `path` (handles quoted / fractional / exponent).
     @discardableResult
-    public func getFloat(_ body: TaskJSON, _ path: String,
+    public func getFloat(_ body: TaskResponseBody, _ path: String,
                          into: TaskFloatRegister? = nil, found: TaskNumberRegister? = nil) -> TaskFloat {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateFloatRegister()
@@ -648,7 +665,7 @@ public struct TaskJSONOps {
     }
     /// `R` = (the whole body contains `text`) ? 1 : 0.
     @discardableResult
-    public func bodyContains(_ body: TaskJSON, _ text: String, into: TaskBoolRegister? = nil) -> TaskBool {
+    public func bodyContains(_ body: TaskResponseBody, _ text: String, into: TaskBoolRegister? = nil) -> TaskBool {
         rec.selectJSON(body)
         let dst = into ?? TaskBoolRegister(rec.allocateRegister())
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extBodyContains, dst.index & 0x0F]
@@ -656,19 +673,22 @@ public struct TaskJSONOps {
         m.append(Cmd.endSysEx); rec.emit(m)
         return dst
     }
-    /// `R` = ``TaskJSONValueType`` raw value of the value at `path`.
+    /// Record the JSON value **kind** at `path` into a register, returned as a typed
+    /// ``TaskJSONType``. Branch on it typed with
+    /// ``FirmataTaskRecorder/ifTrue(_:is:then:elseDo:)`` (e.g. `is: .string`); it's also
+    /// usable as any ``TaskNumber`` (it holds the ``TaskJSONValueType`` raw value).
     @discardableResult
-    public func getType(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumber {
+    public func getType(_ body: TaskResponseBody, _ path: String, into: TaskNumberRegister? = nil) -> TaskJSONType {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonType, dst.index & 0x0F]
         rec.appendLengthPrefixed(&m, path)
         m.append(Cmd.endSysEx); rec.emit(m)
-        return dst
+        return TaskJSONType(index: dst.index)
     }
     /// `R` = byte length of the value span at `path` (size before snapshotting).
     @discardableResult
-    public func getSize(_ body: TaskJSON, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumber {
+    public func getSize(_ body: TaskResponseBody, _ path: String, into: TaskNumberRegister? = nil) -> TaskNumber {
         rec.selectJSON(body)
         let dst = into ?? rec.allocateRegister()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonSize, dst.index & 0x0F]
@@ -681,7 +701,7 @@ public struct TaskJSONOps {
     /// auto-allocated (0–9) unless given; release it with `board.string.free(_:)`.
     /// (Reads the **live** body, so call it right after the `httpGet`.)
     @discardableResult
-    public func getString(_ body: TaskJSON, _ path: String, into slot: TaskStringSlot? = nil) -> TaskString {
+    public func getString(_ body: TaskResponseBody, _ path: String, into slot: TaskStringSlot? = nil) -> TaskString {
         let dst = slot ?? rec.allocateTaskStringSlot()
         var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extJsonGetString, dst.firmwareIndex]
         rec.appendLengthPrefixed(&m, path)
@@ -690,9 +710,9 @@ public struct TaskJSONOps {
     }
 
     /// Persist the **whole current body** into a JSON snapshot slot so it survives the next
-    /// request, **upgrading `body` in place** (its ``TaskJSON/snapshotSlot`` is set). Slot
+    /// request, **upgrading `body` in place** (its ``TaskResponseBody/snapshotSlot`` is set). Slot
     /// auto-allocated (0–1) unless given. Call right after the `httpGet` you want to keep.
-    public func snapshot(_ body: TaskJSON, into slot: TaskJSONSlot? = nil) {
+    public func snapshot(_ body: TaskResponseBody, into slot: TaskJSONSlot? = nil) {
         let s = slot ?? rec.allocateTaskJSONSlot()
         rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extSnapshot,
                   s.firmwareIndex, 0x00, 0x00, Cmd.endSysEx])      // pathLen 0 = whole body
@@ -700,7 +720,7 @@ public struct TaskJSONOps {
     }
 
     /// Free the JSON snapshot slot held by `body` (if any).
-    public func free(_ body: TaskJSON) {
+    public func free(_ body: TaskResponseBody) {
         guard let slot = body.snapshotSlot else { return }
         rec.emit([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extFree, slot.firmwareIndex, Cmd.endSysEx])
         body.snapshotSlot = nil
@@ -869,6 +889,7 @@ public struct TaskNumberRegister: TaskRegister, TaskNumber {
     public var index: UInt8
 
     public init(index: UInt8) {
+        precondition(index <= 15, "register index must be 0…15 (the device has 16 Int32 registers)")
         self.index = index
     }
 
@@ -900,6 +921,7 @@ public struct TaskFloatRegister: TaskRegister, TaskFloat {
     public var index: UInt8
 
     public init(index: UInt8) {
+        precondition(index <= 7, "float register index must be 0…7 (the device has 8 float registers)")
         self.index = index
     }
 
@@ -932,6 +954,7 @@ public struct TaskBoolRegister: TaskRegister, TaskBool {
     public var index: UInt8
 
     public init(index: UInt8) {
+        precondition(index <= 15, "register index must be 0…15 (the device has 16 Int32 registers)")
         self.index = index
     }
 
@@ -952,7 +975,10 @@ public extension TaskBoolRegister {
 /// never takes a bare integer where a pin is meant (distinct from a ``TaskChannel``).
 public struct TaskPin: Sendable {
     public let number: UInt8
-    public init(_ number: UInt8) { self.number = number }
+    public init(_ number: UInt8) {
+        precondition(number <= 127, "pin must be 0…127 (Firmata uses a 7-bit pin number)")
+        self.number = number
+    }
     /// A pin by number — `.pin(13)`.
     public static func pin(_ number: UInt8) -> TaskPin { TaskPin(number) }
 }
@@ -960,23 +986,32 @@ public struct TaskPin: Sendable {
 /// An **analog channel** index (`A0 = 0`, …) — write it as `.channel(0)`. A typed wrapper,
 /// distinct from a ``TaskPin`` (a channel maps to a pin via ``FirmataClient/queryAnalogMapping()``).
 public struct TaskChannel: Sendable {
-    public let index: UInt8
-    public init(_ index: UInt8) { self.index = index }
-    /// An analog channel by index — `.channel(0)`.
-    public static func channel(_ index: UInt8) -> TaskChannel { TaskChannel(index) }
+    public let number: UInt8
+    public init(_ number: UInt8) {
+        precondition(number <= 15, "analog channel must be 0…15 (the recorder's analog ops use a 4-bit channel)")
+        self.number = number
+    }
+    /// An analog channel by number — `.channel(0)`.
+    public static func channel(_ number: UInt8) -> TaskChannel { TaskChannel(number) }
 }
 
 /// One of the device's **JSON snapshot slots** (`0`–`1`) — a typed slot, like a register operand.
 public struct TaskJSONSlot: Sendable {
     public let index: UInt8
-    public init(_ index: UInt8) { self.index = index }
+    public init(_ index: UInt8) {
+        precondition(index <= 1, "JSON slot must be 0 or 1 (2 snapshot slots)")
+        self.index = index
+    }
     internal var firmwareIndex: UInt8 { index & 0x01 }            // device snapshot pool: 0–1
 }
 
 /// One of the device's **string slots** (`0`–`9`) — a typed slot, like a register operand.
 public struct TaskStringSlot: Sendable {
     public let index: UInt8
-    public init(_ index: UInt8) { self.index = index }
+    public init(_ index: UInt8) {
+        precondition(index <= 9, "string slot must be 0…9 (10 string slots)")
+        self.index = index
+    }
     internal var firmwareIndex: UInt8 { (index % 10) + 2 }        // device snapshot pool: 2–11 (after the 2 JSON slots)
 }
 
@@ -985,7 +1020,7 @@ public struct TaskStringSlot: Sendable {
 /// checked for staleness against the generation captured at request time (a later request
 /// makes it stale — test it with ``isValid()``). ``TaskJSONOps/snapshot(_:into:)``
 /// upgrades it **in place** to an owned copy in a ``TaskJSONSlot`` that survives later requests.
-public final class TaskJSON: @unchecked Sendable {
+public final class TaskResponseBody: @unchecked Sendable {
     /// Register holding the body generation captured at request time (borrowed handle).
     internal let genReg: TaskNumberRegister
     /// Slot once snapshotted into an owned, persisted copy (`nil` = borrowed/live).
@@ -1036,18 +1071,23 @@ public struct TaskHTTPResponse: Sendable {
     /// Handle to the response body for the `board.json` inspection ops. Navigate to a
     /// string value with `board.json.getString(body, "path")` to get a ``TaskString``
     /// for the `board.string` ops.
-    public let body: TaskJSON
+    public let body: TaskResponseBody
 }
 
-/// Result-status codes the device records for an inspection op (matches the firmware's
-/// `ST_*` values). Staleness of a borrowed body handle is surfaced on the host via
-/// ``TaskJSON/isValid()``.
-public enum TaskResultStatus: Int32, Sendable {
-    case ok = 0, notFound = 1, stale = 2, typeMismatch = 3, tooBig = 4, allocFailed = 5
+/// The JSON value **kind** at a path — the typed result of ``TaskJSONOps/getType(_:_:into:)``.
+/// It holds a ``TaskJSONValueType`` in one of the device's registers; branch on it typed with
+/// ``FirmataTaskRecorder/ifTrue(_:is:then:elseDo:)``, and it's also usable as any ``TaskNumber``.
+public struct TaskJSONType: TaskRegister, TaskNumber {
+    public var index: UInt8
+    public init(index: UInt8) {
+        precondition(index <= 15, "register index must be 0…15 (the device has 16 Int32 registers)")
+        self.index = index
+    }
+    public var operandBytes: [UInt8] { [0, index & 0x0F] }
 }
 
-/// JSON value kinds returned by ``FirmataTaskRecorder/jsonType(_:into:)``.
-/// Compare a `jsonType` result against `.number.rawValue` etc. via `.const`.
+/// JSON value kinds — the cases of a ``TaskJSONType`` from ``TaskJSONOps/getType(_:_:into:)``.
+/// Use with ``FirmataTaskRecorder/ifTrue(_:is:then:elseDo:)`` (e.g. `is: .string`).
 public enum TaskJSONValueType: Int32, Sendable {
     case missing = 0, object = 1, array = 2, string = 3, number = 4, bool = 5, null = 6
 }

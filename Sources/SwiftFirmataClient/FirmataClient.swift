@@ -968,7 +968,10 @@ public actor FirmataClient {
 /// they're deliberately separate types for the two APIs.
 public struct FirmataPin: Sendable {
     public let number: UInt8
-    public init(_ number: UInt8) { self.number = number }
+    public init(_ number: UInt8) {
+        precondition(number <= 127, "pin must be 0…127 (Firmata uses a 7-bit pin number)")
+        self.number = number
+    }
     /// A pin by number — `.pin(13)`.
     public static func pin(_ number: UInt8) -> FirmataPin { FirmataPin(number) }
 }
@@ -977,10 +980,15 @@ public struct FirmataPin: Sendable {
 /// typed channel identity (distinct from a ``FirmataPin``); the analogue of the recorder's
 /// ``TaskChannel``.
 public struct FirmataChannel: Sendable {
-    public let index: UInt8
-    public init(_ index: UInt8) { self.index = index }
-    /// An analog channel by index — `.channel(0)`.
-    public static func channel(_ index: UInt8) -> FirmataChannel { FirmataChannel(index) }
+    public let number: UInt8
+    public init(_ number: UInt8) {
+        // Channels 0…15 use the standard analog message; ≥16 auto-upgrade to extended
+        // analog (the channel is then treated as a 7-bit pin), so allow the full 0…127.
+        precondition(number <= 127, "analog channel must be 0…127")
+        self.number = number
+    }
+    /// An analog channel by number — `.channel(0)`.
+    public static func channel(_ number: UInt8) -> FirmataChannel { FirmataChannel(number) }
 }
 
 // Convenience overloads that take ``FirmataPin`` / ``FirmataChannel`` (`.pin(13)` /
@@ -1002,7 +1010,7 @@ public extension FirmataClient {
     }
     /// PWM write — `.channel(3)`.
     func analogWrite(channel: FirmataChannel, value: UInt16) async throws {
-        try await analogWrite(channel: channel.index, value: value)
+        try await analogWrite(channel: channel.number, value: value)
     }
     /// Extended analog write (pins ≥ 16 / wide values) — `.pin(9)`.
     func extendedAnalogWrite(pin: FirmataPin, value: Int32) async throws {
@@ -1010,11 +1018,11 @@ public extension FirmataClient {
     }
     /// Enable/disable reporting for an analog channel — `.channel(0)`.
     func reportAnalogChannel(_ channel: FirmataChannel, enable: Bool) async throws {
-        try await reportAnalogChannel(channel.index, enable: enable)
+        try await reportAnalogChannel(channel.number, enable: enable)
     }
     /// One-shot analog read — `.channel(0)`.
     func analogRead(channel: FirmataChannel, timeout: Duration = .seconds(2)) async throws -> UInt16 {
-        try await analogRead(channel: channel.index, timeout: timeout)
+        try await analogRead(channel: channel.number, timeout: timeout)
     }
     /// Query a pin's current mode + value — `.pin(7)`.
     func queryPinState(pin: FirmataPin) async throws -> PinState {
