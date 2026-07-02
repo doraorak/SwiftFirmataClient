@@ -165,6 +165,91 @@ public final class FirmataTaskRecorder {
         bytes.append(Cmd.endSysEx)
     }
 
+    // MARK: Nested tasks (a task that spawns tasks)
+
+    /// Record "**upload and schedule another task**" as a step of *this* task.
+    ///
+    /// When the device reaches this point in the recording it replaces task `id`
+    /// (delete → create → fill → schedule) exactly as if a host had called
+    /// ``FirmataClient/uploadTask(id:startDelay:repeatEvery:_:)`` — but with no host
+    /// involved. Tasks can spawn tasks fully offline:
+    ///
+    /// ```swift
+    /// try await client.uploadTask(id: 1, repeatEvery: .seconds(60)) { board in
+    ///     let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)
+    ///     board.ifTrue(temp, .greaterThan, .number(2800), then: {
+    ///         // Too hot: spawn a blinker that keeps running on its own.
+    ///         $0.addTask(id: 2, repeatEvery: .milliseconds(250)) { alarm in
+    ///             alarm.digitalWrite(pin: .pin(2), high: true)
+    ///             alarm.delay(.milliseconds(125))
+    ///             alarm.digitalWrite(pin: .pin(2), high: false)
+    ///         }
+    ///     }, elseDo: {
+    ///         $0.deleteTask(id: 2)                    // cooled down: stop the alarm
+    ///     })
+    /// }
+    /// ```
+    ///
+    /// Semantics and limits:
+    /// - **Replace-on-run**: each execution of this step deletes any existing task
+    ///   `id` and re-uploads it, so a *repeating* parent restarts the child every
+    ///   period (delete of a missing id is a silent no-op — first run is clean).
+    /// - **Registers and slots are global.** The child shares the same R0–R15 /
+    ///   F0–F7 / snapshot and string slots as every other task. The child's recorder
+    ///   inherits this recorder's auto-allocation cursors (like an `ifTrue` branch),
+    ///   so auto registers won't collide — but the 16/8-register budget is shared.
+    ///   Named registers (`into: .reg(n)`) are the intended way to pass values
+    ///   between parent and child.
+    /// - **Size budget**: the child must fit `MAX_TASK_BYTES` (512) on its own, and
+    ///   its ~8/7-encoded upload messages also count toward the *parent's* 512.
+    /// - **Never reuse the parent's own id** for a child: a task replacing itself
+    ///   while it runs is undefined (use the host's `uploadTask` to replace a task).
+    ///
+    /// - Parameters:
+    ///   - id: Child task id (`0`–`127`). An existing task with this id is replaced.
+    ///   - startDelay: Wait before the child's first run, measured from the moment
+    ///     this step executes on the device (`.zero` = next scheduler pass).
+    ///   - repeatEvery: If non-`nil`, the child loops forever with this period
+    ///     (trailing scheduler delay); `nil` runs it once and it is removed.
+    ///   - build: Records the child's actions into the nested recorder it is handed.
+    public func addTask(
+        id: UInt8,
+        startDelay: Duration = .zero,
+        repeatEvery: Duration? = nil,
+        _ build: (FirmataTaskRecorder) -> Void
+    ) {
+        let child = FirmataTaskRecorder(inheriting: self)
+        build(child)
+        if let period = repeatEvery { child.delay(period) }
+        adoptCursors(from: child)
+        let data = child.bytes
+
+        // The same replace → create → fill → schedule sequence uploadTask sends,
+        // recorded into this task instead of sent over the transport.
+        deleteTask(id: id)
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.create, id & 0x7F,
+                  UInt8(data.count & 0x7F), UInt8((data.count >> 7) & 0x7F), Cmd.endSysEx]
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + 48, data.count)                 // uploadTask's chunk size
+            bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.add, id & 0x7F]
+            bytes += encode7BitFirmata(Array(data[offset..<end]))
+            bytes.append(Cmd.endSysEx)
+            offset = end
+        }
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.schedule, id & 0x7F]
+        bytes += encode7BitFirmata(timeBytes(startDelay.firmataMilliseconds))
+        bytes.append(Cmd.endSysEx)
+    }
+
+    /// Record "**delete task `id`**" — stop and remove a task from within this task
+    /// (typically one spawned earlier with ``addTask(id:startDelay:repeatEvery:_:)``).
+    /// A silent no-op on the device if no such task exists. Deleting the task's
+    /// *own* id ends it after the current run (it won't reschedule).
+    public func deleteTask(id: UInt8) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.delete, id & 0x7F, Cmd.endSysEx]
+    }
+
     // MARK: I2C (standard Firmata — drive an I2C device from a task)
     //
     // The scheduler replays these through the device's Firmata parser, so a task
@@ -782,15 +867,18 @@ public struct TaskJSONOps {
 public struct TaskStringOps {
     internal let rec: FirmataTaskRecorder
 
-    /// Make a standalone string from a literal, stored in an auto-allocated ``TaskStringSlot``.
+    /// Make a standalone string from a literal, stored in a ``TaskStringSlot`` —
+    /// auto-allocated (0–9, wrapping) unless you pass an explicit `into:` slot.
+    /// Pin a slot when the string must be visible to another task, or to opt out of
+    /// auto-allocation wraparound (mirrors ``TaskJSONOps/getString(_:_:into:)``).
     /// Release it with `board.string.free(_:)`.
     @discardableResult
-    public func createString(_ value: String) -> TaskString {
-        let slot = rec.allocateTaskStringSlot()
-        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringSetSlot, slot.firmwareIndex]
+    public func createString(_ value: String, into slot: TaskStringSlot? = nil) -> TaskString {
+        let dst = slot ?? rec.allocateTaskStringSlot()
+        var m: [UInt8] = [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extStringSetSlot, dst.firmwareIndex]
         rec.appendLengthPrefixed(&m, value)
         m.append(Cmd.endSysEx); rec.emit(m)
-        return TaskString(slot: slot, rec: rec)
+        return TaskString(slot: dst, rec: rec)
     }
     /// `R` = byte length of the string.
     @discardableResult

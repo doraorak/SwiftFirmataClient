@@ -210,4 +210,83 @@ struct SchedulerTests {
         #expect(result == nil)
         #expect(t.lastSent == [0xF0, 0x7B, 0x06, 9, 0xF7])
     }
+
+    // MARK: Nested tasks (recorder addTask / deleteTask)
+
+    @Test func recorderAddTaskEmbedsUploadSequence() {
+        let r = FirmataTaskRecorder()
+        r.setPinMode(.pin(2), mode: .output)
+        r.addTask(id: 9, startDelay: .milliseconds(250), repeatEvery: .milliseconds(1000)) { child in
+            child.digitalWrite(pin: .pin(2), high: true)
+        }
+
+        // Child body = digitalWrite + trailing repeat delay.
+        var child: [UInt8] = [0xF5, 2, 0x01]
+        child += [0xF0, 0x7B, 0x03] + encode7BitFirmata(timeBytes(1000)) + [0xF7]
+
+        var expected: [UInt8] = [0xF4, 2, 0x01]                               // parent setPinMode
+        expected += [0xF0, 0x7B, 0x01, 9, 0xF7]                               // delete 9 (replace)
+        expected += [0xF0, 0x7B, 0x00, 9,
+                     UInt8(child.count & 0x7F), UInt8((child.count >> 7) & 0x7F), 0xF7]  // create
+        expected += [0xF0, 0x7B, 0x02, 9] + encode7BitFirmata(child) + [0xF7] // add (one chunk)
+        expected += [0xF0, 0x7B, 0x04, 9] + encode7BitFirmata(timeBytes(250)) + [0xF7]   // schedule
+        #expect(r.bytes == expected)
+    }
+
+    @Test func recorderAddTaskChunksLongChild() {
+        let r = FirmataTaskRecorder()
+        r.addTask(id: 3) { child in
+            for _ in 0..<30 { child.digitalWrite(pin: .pin(2), high: true) }  // 90 bytes > 48
+        }
+        // Two ADD chunks (48 + 42 bytes), each its own SysEx to task 3, whose
+        // payloads decode back to exactly the 30 digitalWrites.
+        let addHeader: [UInt8] = [0xF0, 0x7B, 0x02, 3]
+        let b = r.bytes
+        var chunks: [[UInt8]] = []
+        var i = 0
+        while i + addHeader.count <= b.count {
+            if Array(b[i..<i + addHeader.count]) == addHeader {
+                var k = i + addHeader.count
+                var payload: [UInt8] = []
+                while b[k] != 0xF7 { payload.append(b[k]); k += 1 }
+                chunks.append(payload)
+                i = k
+            }
+            i += 1
+        }
+        #expect(chunks.count == 2)
+        let decoded: [UInt8] = chunks.flatMap { decode7BitFirmata(num7BitOutBytes($0.count), $0) }
+        let one: [UInt8] = [0xF5, 2, 0x01]
+        let expectedChild: [UInt8] = Array(repeating: one, count: 30).flatMap { $0 }
+        #expect(Array(decoded.prefix(90)) == expectedChild)
+    }
+
+    @Test func recorderAddTaskInheritsRegisterCursor() {
+        let r = FirmataTaskRecorder()
+        _ = r.analogRead(channel: .channel(0))           // auto -> R15
+        r.addTask(id: 4) { child in
+            _ = child.analogRead(channel: .channel(1))   // inherits cursor -> R14
+        }
+        _ = r.analogRead(channel: .channel(2))           // resumes past the child -> R13
+
+        // Parent-level analog reads landed in R15 then R13 (R14 went to the child).
+        let b = r.bytes
+        func hasAnalogRead(reg: UInt8, ch: UInt8) -> Bool {
+            let msg: [UInt8] = [0xF0, 0x7B, 0x7F, 0x12, reg, ch, 0xF7]
+            var i = 0
+            while i + msg.count <= b.count {
+                if Array(b[i..<i + msg.count]) == msg { return true }
+                i += 1
+            }
+            return false
+        }
+        #expect(hasAnalogRead(reg: 15, ch: 0))
+        #expect(hasAnalogRead(reg: 13, ch: 2))
+    }
+
+    @Test func recorderDeleteTask() {
+        let r = FirmataTaskRecorder()
+        r.deleteTask(id: 5)
+        #expect(r.bytes == [0xF0, 0x7B, 0x01, 5, 0xF7])
+    }
 }

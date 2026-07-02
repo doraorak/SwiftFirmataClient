@@ -357,26 +357,53 @@ try await client.uploadTask(id: 1) { board in
     board.digitalWrite(pin: .pin(2), high: true)
     board.writeDigitalPort(0, pinMask: 0xFF)
     board.analogWrite(channel: .channel(3), value: 200)
-    board.extendedAnalogWrite(pin: .pin(25), value: 1500)  // PWM on pins ≥16 / wide values
     board.delay(.milliseconds(1000))                       // the board waits here while running
 
     // I2C from a task (drive an OLED etc. with no host connected):
     board.configureI2C(delay: .microseconds(0))       // begin the bus (once)
     board.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
-
-    // I2C READ into a register — act on a sensor with nobody connected (non-standard).
-    // Reads `count` (1–4) bytes after writing the register, packed big-endian into R[dst].
-    let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)  // -> TaskNumber
-    board.ifTrue(temp, .greaterThan, .number(2000)) {
-        $0.sendString("too hot")                      // board -> host STRING_DATA (telemetry)
-    }
+    // (no i2c reads in a task — their reply would have no host to receive it)
 }
 ```
 
-> `board.sendString(_:)` makes the **board send a string to a connected host** (arrives as
-> `.stringData` on `client.messages`) — the reverse of `client.sendString(_:)`, which only
-> logs to the board's serial console. Both `i2cRead` and `sendString` are non-standard ops:
-> they need this project's firmware (≥ 2.6.0); a standard board ignores them.
+### Tasks that spawn tasks — `addTask` / `deleteTask`
+
+A recording can contain a whole *other* task: `board.addTask(id:...) { child in … }`
+records "replace, upload, and schedule task `id`" as a step. When the device executes
+it, the child task is created and scheduled exactly as if a host had called
+`uploadTask` — but nobody needs to be connected. `board.deleteTask(id:)` stops one.
+
+```swift
+// Check a sensor every minute; while it's hot, an alarm task blinks on its own.
+try await client.uploadTask(id: 1, repeatEvery: .seconds(60)) { board in
+    let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)
+    board.ifTrue(temp, .greaterThan, .number(2800), then: {
+        $0.addTask(id: 2, repeatEvery: .milliseconds(250)) { alarm in
+            alarm.digitalWrite(pin: .pin(2), high: true)
+            alarm.delay(.milliseconds(125))
+            alarm.digitalWrite(pin: .pin(2), high: false)
+        }
+    }, elseDo: {
+        $0.deleteTask(id: 2)          // cooled down — remove the alarm
+    })
+}
+```
+
+Rules of the road:
+
+- **Replace-on-run.** Every execution of the `addTask` step deletes and re-uploads
+  the child, so a repeating parent restarts its child once per period. (Delete of a
+  missing id is a silent no-op, so the first run is clean.)
+- **Registers and slots are global** across all tasks — the child inherits the
+  parent's auto-allocation cursors (like an `ifTrue` branch), so auto registers
+  don't collide, but the 16-register budget is shared. Use pinned registers
+  (`into: .reg(n)`) to pass values parent → child.
+- **Budgets.** The child must fit `MAX_TASK_BYTES` (512) on its own, and its
+  ~8/7-encoded upload messages also count toward the parent's 512.
+- **Never reuse the parent's own id** for the child — replacing yourself while
+  running is firmware-defined territory (the firmware refuses to reuse the
+  running slot; use the host's `uploadTask` to replace a live task instead).
+- `deleteTask(id:)` with the task's *own* id ends it after the current run.
 
 ---
 

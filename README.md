@@ -157,6 +157,27 @@ await client.disconnect()          // the board keeps blinking
 - Low-level control is also available: `createTask`, `addToTask`,
   `scheduleTask`, `deleteTask`, `resetTasks`, `queryAllTasks`, `queryTask`.
 
+**Tasks can spawn tasks.** Inside a recording, `board.addTask(id:...) { child in … }`
+records "upload and schedule task `id`" as a step — when the device reaches it, it
+replaces that task and schedules it, with no host involved. `board.deleteTask(id:)`
+stops one. Registers/slots are global across tasks (pin registers with `into:` to
+pass values between them); a repeating parent restarts its child every period; never
+reuse the parent's own id.
+
+```swift
+// A watchdog that spawns (or keeps restarting) an alarm blinker when hot.
+try await client.uploadTask(id: 1, repeatEvery: .seconds(60)) { board in
+    let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)
+    board.ifTrue(temp, .greaterThan, .number(2800), then: {
+        $0.addTask(id: 2, repeatEvery: .milliseconds(250)) { alarm in
+            alarm.digitalWrite(pin: .pin(2), high: true)
+            alarm.delay(.milliseconds(125))
+            alarm.digitalWrite(pin: .pin(2), high: false)
+        }
+    }, elseDo: { $0.deleteTask(id: 2) })
+}
+```
+
 ### On-device logic (scheduler extension)
 
 > An extension carried under the scheduler's reserved `EXTENDED_SCHEDULER_COMMAND`
@@ -438,7 +459,9 @@ This is fully standard-compliant: eviction is signalled with an ordinary
 `FirmataTaskRecorder` (used inside `uploadTask`) mirrors the writes — `setPinMode`,
 `digitalWrite(pin:high:)`, `analogWrite(channel:value:)`, `delay(_:)`, plus
 **I2C** `configureI2C(delay:)` / `i2cWrite(address:data:is10Bit:)` (drive an
-I2C device — e.g. an SSD1306 OLED — from a task) — plus the
+I2C device — e.g. an SSD1306 OLED — from a task), **nested tasks**
+`addTask(id:startDelay:repeatEvery:_:)` / `deleteTask(id:)` (a task that
+spawns or stops other tasks, fully offline) — plus the
 **extension¹** ops: `setRegister`, `digitalRead(into:)`/`digitalRead(pin:)`,
 `analogRead(into:)`/`analogRead(channel:)`, `ifTrue(_:_:_:then:elseDo:)`,
 `ifTrue(_:then:elseDo:)` (bool operand), `compare(_:_:_:into:)`,
