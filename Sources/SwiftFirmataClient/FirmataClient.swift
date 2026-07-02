@@ -74,6 +74,12 @@ public actor FirmataClient {
     // Encrypted Wi-Fi provisioning handshake (non-standard extension).
     private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
     private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
+    // Generation counters guarding the two single-slot Wi-Fi continuations above:
+    // a resolved call's timeout Task keeps sleeping, and without the generation
+    // check it would wake up and pop a LATER call's pending continuation (seen as
+    // a spurious `noResponse` at exactly the earlier call's timeout).
+    private var wifiKeySeq    = 0
+    private var wifiStatusSeq = 0
 
     // Which channels/ports we have reporting enabled for (so a one-shot read can
     // restore the prior state instead of clobbering ongoing reporting).
@@ -565,27 +571,35 @@ public actor FirmataClient {
         return o
     }
     private func wifiBeginHandshake(timeout: Duration) async throws -> [UInt8] {
-        try await withCheckedThrowingContinuation { cont in
+        wifiKeySeq &+= 1
+        let seq = wifiKeySeq
+        return try await withCheckedThrowingContinuation { cont in
             pendingWiFiKey = cont
             let token = nextTrackingToken()
             inFlightTasks[token] = Task {
                 do { try await self.transport.send(self.wifiFrame(WiFiCfg.begin)) }
                 catch { if let c = self.pop(&self.pendingWiFiKey) { c.resume(throwing: error) }; self.clearInFlight(token); return }
                 try? await Task.sleep(for: timeout)
-                if let c = self.pop(&self.pendingWiFiKey) { c.resume(throwing: FirmataError.noResponse) }
+                if seq == self.wifiKeySeq, let c = self.pop(&self.pendingWiFiKey) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
                 self.clearInFlight(token)
             }
         }
     }
     private func sendWiFiAndAwaitStatus(_ frame: [UInt8], timeout: Duration) async throws -> (Int, String) {
-        try await withCheckedThrowingContinuation { cont in
+        wifiStatusSeq &+= 1
+        let seq = wifiStatusSeq
+        return try await withCheckedThrowingContinuation { cont in
             pendingWiFiStatus = cont
             let token = nextTrackingToken()
             inFlightTasks[token] = Task {
                 do { try await self.transport.send(frame) }
                 catch { if let c = self.pop(&self.pendingWiFiStatus) { c.resume(throwing: error) }; self.clearInFlight(token); return }
                 try? await Task.sleep(for: timeout)
-                if let c = self.pop(&self.pendingWiFiStatus) { c.resume(throwing: FirmataError.noResponse) }
+                if seq == self.wifiStatusSeq, let c = self.pop(&self.pendingWiFiStatus) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
                 self.clearInFlight(token)
             }
         }

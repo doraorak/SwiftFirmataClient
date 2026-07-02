@@ -93,4 +93,28 @@ struct WiFiProvisioningTests {
         catch FirmataError.wifiCredentialsRejected { /* expected */ }
         catch { Issue.record("wrong error: \(error)") }
     }
+    // Regression: a resolved Wi-Fi call's timeout Task must not pop a LATER
+    // call's pending continuation when it finally wakes (stale-timeout race —
+    // surfaced as a spurious noResponse during provisioning over serial).
+    @Test func staleWiFiTimeoutDoesNotKillLaterCall() async throws {
+        let t = MockTransport()
+        let client = FirmataClient(transport: t)
+        await client.connect()
+
+        // 1st call: short timeout, answered immediately.
+        let q1 = Task { try await client.queryWiFiStatus(timeout: .milliseconds(150)) }
+        _ = await waitSent(t, sub: WiFiCfg.query)
+        t.inject([0xF0, WiFiCfg.command, WiFiCfg.status, 1, 0, 0xF7])
+        _ = try await q1.value
+
+        // 2nd call: long timeout. Sleep past the 1st call's window (its stale
+        // sleeper fires there), then answer — the 2nd call must still resolve.
+        let q2 = Task { try await client.queryWiFiStatus(timeout: .seconds(5)) }
+        _ = await waitSent(t, sub: WiFiCfg.query)
+        try await Task.sleep(for: .milliseconds(400))
+        t.inject([0xF0, WiFiCfg.command, WiFiCfg.status, 1, 0, 0xF7])
+        let st = try await q2.value
+        #expect(st.connected)
+    }
+
 }
