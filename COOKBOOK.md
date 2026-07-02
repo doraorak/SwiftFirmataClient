@@ -73,6 +73,14 @@ await client.disconnect()
 
 ---
 
+### TCP with a known address (no discovery)
+
+```swift
+// Static IP / DHCP reservation / VPN / SSH tunnel — anywhere mDNS can't go.
+let client = FirmataClient(transport: TCPTransport(host: "192.168.1.87"))
+await client.connect()
+```
+
 ### Serial (USB, macOS)
 
 ```swift

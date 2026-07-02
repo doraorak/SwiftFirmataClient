@@ -30,6 +30,7 @@ try await client.digitalWrite(pin: 2, high: true)   // LED on
 - **Firmata protocol v2.x** — protocol/firmware/capability/analog-mapping/pin-state queries, digital & analog I/O, extended analog, PWM, sampling interval, strings, and full I2C.
 - **Two built-in transports**
   - `BonjourTransport` — discovers `_firmata._tcp` services via mDNS and connects over TCP.
+  - `TCPTransport` — direct host:port TCP, no discovery (static IPs, other subnets, VPN/Tailscale, SSH tunnels).
   - `BLETransport` — connects over the Nordic UART Service (NUS), the de-facto standard for Firmata-over-BLE.
   - `SerialTransport` — Firmata over the board's USB serial port (macOS; 2.7.0+ firmwares). No network needed.
 - **Bring your own transport** — conform to the small `FirmataTransport` protocol to run Firmata over serial, a socket, a mock, or anything else.
@@ -42,7 +43,7 @@ try await client.digitalWrite(pin: 2, high: true)   // LED on
 |---|---|
 | Platforms | macOS 13+, iOS 16+ |
 | Toolchain | Swift 6.0+ (Xcode 16+) |
-| Transports | `BonjourTransport`/`BLETransport` need `Network` / `CoreBluetooth` (Apple platforms); `SerialTransport` is macOS-only (POSIX) |
+| Transports | `BonjourTransport`/`TCPTransport`/`BLETransport` need `Network` / `CoreBluetooth` (Apple platforms); `SerialTransport` is macOS-only (POSIX) |
 
 ## Installation
 
@@ -94,6 +95,19 @@ On macOS/iOS, add to your **Info.plist**:
 <key>NSBonjourServices</key>
 <array><string>_firmata._tcp</string></array>
 ```
+
+### Connecting over TCP directly (known address)
+
+When the board's address is already known — or Bonjour can't reach it (another
+subnet, VPN/Tailscale, an SSH tunnel, a static IP) — skip discovery entirely:
+
+```swift
+let client = FirmataClient(transport: TCPTransport(host: "192.168.1.87"))       // port 3030
+let client = FirmataClient(transport: TCPTransport(host: "127.0.0.1", port: 4030)) // tunnel
+```
+
+No Info.plist entries needed (it never browses; connecting to a `.local` name
+still resolves via unicast where the network allows it).
 
 ### Connecting over BLE
 
