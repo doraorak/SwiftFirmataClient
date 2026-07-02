@@ -31,6 +31,7 @@ try await client.digitalWrite(pin: 2, high: true)   // LED on
 - **Two built-in transports**
   - `BonjourTransport` — discovers `_firmata._tcp` services via mDNS and connects over TCP.
   - `BLETransport` — connects over the Nordic UART Service (NUS), the de-facto standard for Firmata-over-BLE.
+  - `SerialTransport` — Firmata over the board's USB serial port (macOS; 2.7.0+ firmwares). No network needed.
 - **Bring your own transport** — conform to the small `FirmataTransport` protocol to run Firmata over serial, a socket, a mock, or anything else.
 - **Swift 6 / strict concurrency** — `Sendable` throughout, no data races, `async`/`await` end to end.
 - **Tested** — a byte-level parser test suite plus integration tests over a mock transport.
@@ -41,7 +42,7 @@ try await client.digitalWrite(pin: 2, high: true)   // LED on
 |---|---|
 | Platforms | macOS 13+, iOS 16+ |
 | Toolchain | Swift 6.0+ (Xcode 16+) |
-| Transports | `BonjourTransport`/`BLETransport` need `Network` / `CoreBluetooth` (Apple platforms) |
+| Transports | `BonjourTransport`/`BLETransport` need `Network` / `CoreBluetooth` (Apple platforms); `SerialTransport` is macOS-only (POSIX) |
 
 ## Installation
 
@@ -103,6 +104,24 @@ await client.connect()
 ```
 
 Add `NSBluetoothAlwaysUsageDescription` to your Info.plist.
+
+### Connecting over USB serial (macOS)
+
+The same USB port used for flashing and the boot log console also speaks
+Firmata (firmwares 2.7.0+). The port boots as the log console; the first byte
+the client sends claims the Firmata session and silences the console.
+
+```swift
+let client = FirmataClient(transport: SerialTransport(path: "/dev/cu.wchusbserial110"))
+await client.connect()
+// Opening the port auto-resets the board (DTR wiring) — give it a few seconds
+// to boot before the first query.
+```
+
+- Find the device node with `ls /dev/cu.*` (use the `cu.` entry, not `tty.`).
+- 115200 baud (the default); no Info.plist entries or network required.
+- There is no serial "disconnect": the session lasts until another transport
+  claims the board or it reboots. Quitting your app leaves tasks running.
 
 ### Reading inputs
 

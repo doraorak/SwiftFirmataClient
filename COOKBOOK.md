@@ -73,6 +73,21 @@ await client.disconnect()
 
 ---
 
+### Serial (USB, macOS)
+
+```swift
+// The flashing/console USB port, speaking Firmata (firmwares 2.7.0+).
+// ls /dev/cu.*  ->  pick the cu.usbserial-style node.
+let client = FirmataClient(transport: SerialTransport(path: "/dev/cu.wchusbserial110"))
+await client.connect()
+try await Task.sleep(for: .seconds(5))   // port-open auto-resets the board; let it boot
+let ids = try await client.queryAllTasks()
+```
+
+The board's console goes quiet the moment you send the first byte — from then
+on the port is a clean Firmata stream until another transport takes over or the
+board reboots. Boot chatter before that is harmless (the parser skips it).
+
 ## 2. The `messages` stream + disconnect reasons
 
 Every message the device sends is published on `client.messages` (an `AsyncStream`).
