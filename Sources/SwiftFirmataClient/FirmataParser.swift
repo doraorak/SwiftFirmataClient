@@ -1,7 +1,9 @@
-/// Stateful byte-level parser for the Firmata protocol.
-///
-/// Feed bytes one at a time via ``consume(_:)``.
-/// Returns a complete ``FirmataMessage`` when one is ready, or `nil` otherwise.
+/**
+ Stateful byte-level parser for the Firmata protocol.
+
+ Feed bytes one at a time via ``consume(_:)``.
+ Returns a complete ``FirmataMessage`` when one is ready, or `nil` otherwise.
+ */
 public struct FirmataParser: Sendable {
 
     private enum State: Sendable {

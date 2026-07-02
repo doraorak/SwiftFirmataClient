@@ -1,29 +1,31 @@
 #if os(macOS)
 import Foundation
 
-/// Talks Firmata over a USB serial port (macOS) — the board's UART0, the same
-/// port used for flashing and the boot log console.
-///
-/// Firmware behaviour (both ESP32 firmwares, 2.7.0+): the port boots as the log
-/// console; the **first byte** the host sends claims the Firmata session — the
-/// console goes quiet and the port speaks Firmata until another transport takes
-/// over or the board reboots.
-///
-/// Two quirks of USB-serial on ESP32 dev boards, both handled here:
-/// - **Opening the port auto-resets the board** (DTR/RTS wiring). `openStream`
-///   therefore delivers everything the board prints while booting — ASCII log
-///   noise the Firmata parser ignores by design. Wait for the boot to settle
-///   (`FirmataClient.connect()` + your first query round-trip does this
-///   naturally), or pass `settleDelay` to drop bytes received in that window.
-/// - There is **no disconnect event**; closing the app just leaves the board
-///   running (tasks keep going, like Wi-Fi).
-///
-/// Usage:
-/// ```swift
-/// let transport = SerialTransport(path: "/dev/cu.wchusbserial110")
-/// let client = FirmataClient(transport: transport)
-/// await client.connect()
-/// ```
+/**
+ Talks Firmata over a USB serial port (macOS) — the board's UART0, the same
+ port used for flashing and the boot log console.
+
+ Firmware behaviour (both ESP32 firmwares, 2.7.0+): the port boots as the log
+ console; the **first byte** the host sends claims the Firmata session — the
+ console goes quiet and the port speaks Firmata until another transport takes
+ over or the board reboots.
+
+ Two quirks of USB-serial on ESP32 dev boards, both handled here:
+ - **Opening the port auto-resets the board** (DTR/RTS wiring). `openStream`
+   therefore delivers everything the board prints while booting — ASCII log
+   noise the Firmata parser ignores by design. Wait for the boot to settle
+   (`FirmataClient.connect()` + your first query round-trip does this
+   naturally), or pass `settleDelay` to drop bytes received in that window.
+ - There is **no disconnect event**; closing the app just leaves the board
+   running (tasks keep going, like Wi-Fi).
+
+ Usage:
+ ```swift
+ let transport = SerialTransport(path: "/dev/cu.wchusbserial110")
+ let client = FirmataClient(transport: transport)
+ await client.connect()
+ ```
+ */
 public final class SerialTransport: FirmataTransport, @unchecked Sendable {
 
     private let path: String
@@ -32,13 +34,15 @@ public final class SerialTransport: FirmataTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32 = -1
 
-    /// - Parameters:
-    ///   - path: The device node, e.g. `/dev/cu.usbserial-0001` or
-    ///     `/dev/cu.wchusbserial110` (`ls /dev/cu.*`). Use the `cu.` node, not `tty.`.
-    ///   - baudRate: Line speed; both ESP32 firmwares use 115200.
-    ///   - settleDelay: Bytes received this long after opening are discarded —
-    ///     the board's boot chatter after the open-triggered auto-reset. `0`
-    ///     forwards everything (the Firmata parser skips ASCII noise anyway).
+    /**
+     - Parameters:
+       - path: The device node, e.g. `/dev/cu.usbserial-0001` or
+         `/dev/cu.wchusbserial110` (`ls /dev/cu.*`). Use the `cu.` node, not `tty.`.
+       - baudRate: Line speed; both ESP32 firmwares use 115200.
+       - settleDelay: Bytes received this long after opening are discarded —
+         the board's boot chatter after the open-triggered auto-reset. `0`
+         forwards everything (the Firmata parser skips ASCII noise anyway).
+     */
     public init(path: String, baudRate: speed_t = 115200, settleDelay: TimeInterval = 0) {
         self.path = path
         self.baudRate = baudRate

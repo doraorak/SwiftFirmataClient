@@ -1,17 +1,12 @@
-/// Firmata protocol v2.8.0 client library for Arduino / ESP32.
-///
-/// Typical usage:
-/// ```swift
-/// let transport = MySerialTransport(port: "/dev/tty.usbmodem1")
-/// let client = FirmataClient(transport: transport)
-/// await client.connect()
-///
-/// try await client.setPinMode(13, mode: .output)
-/// try await client.digitalWrite(pin: 13, high: true)
-///
-/// let fw = try await client.queryFirmware()
-/// print("\(fw.name) v\(fw.major).\(fw.minor)")
-/// ```
+/*
+ * SwiftFirmataClient — a concurrency-safe Firmata 2.x client.
+ *
+ * FirmataClient (actor) speaks the protocol over any FirmataTransport; four
+ * transports ship with the package (Bonjour, TCP, BLE, USB serial). Live calls
+ * drive the board directly; FirmataTaskRecorder records tasks the board runs
+ * on its own, including the on-device extension (registers, branches, HTTP +
+ * JSON/string inspection, nested tasks). See README + COOKBOOK for usage.
+ */
 
 public enum FirmataError: Error, Sendable {
     case transportClosed

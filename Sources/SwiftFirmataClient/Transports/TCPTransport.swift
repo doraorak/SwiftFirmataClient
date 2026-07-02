@@ -1,29 +1,33 @@
 import Foundation
 import Network
 
-/// Connects to a Firmata device at a known **host and port** over TCP — no mDNS
-/// discovery involved.
-///
-/// Use this instead of ``BonjourTransport`` whenever the board's address is
-/// already known or Bonjour can't reach it: a static IP or DHCP reservation,
-/// another subnet, a VPN/Tailscale network, or an SSH/port-forward tunnel.
-/// (Bonjour multicast doesn't cross any of those.)
-///
-/// Usage:
-/// ```swift
-/// let transport = TCPTransport(host: "192.168.1.87")          // firmware default port 3030
-/// let transport = TCPTransport(host: "esp32-firmata.local")   // direct mDNS-name resolution
-/// let transport = TCPTransport(host: "127.0.0.1", port: 4030) // through an SSH tunnel
-/// ```
+/**
+ Connects to a Firmata device at a known **host and port** over TCP — no mDNS
+ discovery involved.
+
+ Use this instead of ``BonjourTransport`` whenever the board's address is
+ already known or Bonjour can't reach it: a static IP or DHCP reservation,
+ another subnet, a VPN/Tailscale network, or an SSH/port-forward tunnel.
+ (Bonjour multicast doesn't cross any of those.)
+
+ Usage:
+ ```swift
+ let transport = TCPTransport(host: "192.168.1.87")          // firmware default port 3030
+ let transport = TCPTransport(host: "esp32-firmata.local")   // direct mDNS-name resolution
+ let transport = TCPTransport(host: "127.0.0.1", port: 4030) // through an SSH tunnel
+ ```
+ */
 public final class TCPTransport: FirmataTransport, @unchecked Sendable {
 
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private var connection: NWConnection?
 
-    /// Connection-readiness gate. `send` must not run before the TCP connection
-    /// reaches `.ready`; otherwise it would throw `transportClosed` while the
-    /// connection is still being established. Guarded by `lock`.
+    /**
+     Connection-readiness gate. `send` must not run before the TCP connection
+     reaches `.ready`; otherwise it would throw `transportClosed` while the
+     connection is still being established. Guarded by `lock`.
+     */
     private let lock = NSLock()
     private var isReady = false
     private var readyError: Error?
@@ -32,10 +36,12 @@ public final class TCPTransport: FirmataTransport, @unchecked Sendable {
     /// How long to wait for the connection before giving up.
     private let connectTimeout: TimeInterval
 
-    /// - Parameters:
-    ///   - host: IP address or hostname (a `.local` mDNS name works too).
-    ///   - port: TCP port; the firmwares listen on `3030`.
-    ///   - connectTimeout: Seconds before an unreachable host surfaces as an error.
+    /**
+     - Parameters:
+       - host: IP address or hostname (a `.local` mDNS name works too).
+       - port: TCP port; the firmwares listen on `3030`.
+       - connectTimeout: Seconds before an unreachable host surfaces as an error.
+     */
     public init(host: String, port: UInt16 = 3030, connectTimeout: TimeInterval = 15) {
         self.host           = NWEndpoint.Host(host)
         self.port           = NWEndpoint.Port(rawValue: port) ?? 3030

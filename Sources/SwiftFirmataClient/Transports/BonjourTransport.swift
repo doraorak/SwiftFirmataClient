@@ -1,20 +1,22 @@
 import Foundation
 import Network
 
-/// Discovers a Firmata device advertised via mDNS/Bonjour and connects over TCP.
-///
-/// On the ESP32 side (inside `setup()`, after WiFi connects):
-/// ```cpp
-/// #include <ESPmDNS.h>
-/// MDNS.begin("esp32-firmata");
-/// MDNS.addService("firmata", "tcp", 3030);
-/// ```
-///
-/// Usage:
-/// ```swift
-/// let transport = BonjourTransport()          // finds first "_firmata._tcp" service
-/// let transport = BonjourTransport(named: "esp32-livingroom")  // filter by instance name
-/// ```
+/**
+ Discovers a Firmata device advertised via mDNS/Bonjour and connects over TCP.
+
+ On the ESP32 side (inside `setup()`, after WiFi connects):
+ ```cpp
+ #include <ESPmDNS.h>
+ MDNS.begin("esp32-firmata");
+ MDNS.addService("firmata", "tcp", 3030);
+ ```
+
+ Usage:
+ ```swift
+ let transport = BonjourTransport()          // finds first "_firmata._tcp" service
+ let transport = BonjourTransport(named: "esp32-livingroom")  // filter by instance name
+ ```
+ */
 public final class BonjourTransport: FirmataTransport, @unchecked Sendable {
 
     private let serviceType: String
@@ -22,9 +24,11 @@ public final class BonjourTransport: FirmataTransport, @unchecked Sendable {
     private var browser: NWBrowser?
     private var connection: NWConnection?
 
-    /// Connection-readiness gate. `send` must not run before the TCP connection
-    /// reaches `.ready`; otherwise it would throw `transportClosed` while the
-    /// browser is still discovering the device. Guarded by `lock`.
+    /**
+     Connection-readiness gate. `send` must not run before the TCP connection
+     reaches `.ready`; otherwise it would throw `transportClosed` while the
+     browser is still discovering the device. Guarded by `lock`.
+     */
     private let lock = NSLock()
     private var isReady = false
     private var readyError: Error?
@@ -78,10 +82,10 @@ public final class BonjourTransport: FirmataTransport, @unchecked Sendable {
                 guard let match else { return }
                 browser.cancel()
 
-                // Prefer a direct IP:port endpoint extracted from the TXT record.
-                // This bypasses mDNS A-record resolution for "esp32-firmata.local",
-                // which can time out on home networks that don't relay multicast DNS.
-                // txt[key] returns Substring? on Network.framework; String() converts it.
+                /* Prefer a direct IP:port endpoint extracted from the TXT record.
+                   This bypasses mDNS A-record resolution for "esp32-firmata.local",
+                   which can time out on home networks that don't relay multicast DNS.
+                   txt[key] returns Substring? on Network.framework; String() converts it. */
                 let endpoint: NWEndpoint = {
                     guard case .bonjour(let txt) = match.metadata,
                           let ipRaw = txt["ip"]

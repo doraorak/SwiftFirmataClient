@@ -1,23 +1,25 @@
 #if canImport(CoreBluetooth)
 @preconcurrency import CoreBluetooth
 
-/// Connects to a Firmata device over BLE using the Nordic UART Service (NUS).
-///
-/// Compatible firmware: ConfigurableFirmata with BLEStream (ESP32) or any
-/// Firmata BLE build that exposes the NUS service/characteristics.
-///
-/// NUS UUIDs (standard across all BLE serial implementations):
-///   Service  6E400001-B5A3-F393-E0A9-E50E24DCCA9E
-///   RX char  6E400002-...  (host → device, write-without-response)
-///   TX char  6E400003-...  (device → host, notify)
-///
-/// Usage:
-/// ```swift
-/// let transport = BLETransport()                        // first NUS device found
-/// let transport = BLETransport(peripheralName: "Firmata-ESP32")  // filter by name
-/// ```
-///
-/// Add `NSBluetoothAlwaysUsageDescription` to your Info.plist.
+/**
+ Connects to a Firmata device over BLE using the Nordic UART Service (NUS).
+
+ Compatible firmware: ConfigurableFirmata with BLEStream (ESP32) or any
+ Firmata BLE build that exposes the NUS service/characteristics.
+
+ NUS UUIDs (standard across all BLE serial implementations):
+   Service  6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+   RX char  6E400002-...  (host → device, write-without-response)
+   TX char  6E400003-...  (device → host, notify)
+
+ Usage:
+ ```swift
+ let transport = BLETransport()                        // first NUS device found
+ let transport = BLETransport(peripheralName: "Firmata-ESP32")  // filter by name
+ ```
+
+ Add `NSBluetoothAlwaysUsageDescription` to your Info.plist.
+ */
 public final class BLETransport: NSObject, FirmataTransport, @unchecked Sendable {
 
     // MARK: - NUS service / characteristic UUIDs
@@ -40,9 +42,11 @@ public final class BLETransport: NSObject, FirmataTransport, @unchecked Sendable
 
     private let nameFilter: String?
 
-    /// Connection-readiness gate. `send` must not run before the RX characteristic
-    /// has been discovered; otherwise it would throw `transportClosed` while the
-    /// central is still scanning / discovering. All access on `cbQueue`.
+    /**
+     Connection-readiness gate. `send` must not run before the RX characteristic
+     has been discovered; otherwise it would throw `transportClosed` while the
+     central is still scanning / discovering. All access on `cbQueue`.
+     */
     private var isReady = false
     private var readyError: Error?
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []

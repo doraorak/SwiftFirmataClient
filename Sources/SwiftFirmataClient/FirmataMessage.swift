@@ -43,10 +43,12 @@ public enum FirmataMessage: Sendable {
     /// Scheduler error (e.g. a query for a task id that does not exist).
     case schedulerError(taskId: UInt8)
 
-    /// Result of an internet request made by the device (non-standard extension):
-    /// the HTTP status code (`0` on error) and the response body. Delivered when a
-    /// task's ``FirmataTaskRecorder/httpGet(_:statusInto:)`` runs while a host is
-    /// connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
+    /**
+     Result of an internet request made by the device (non-standard extension):
+     the HTTP status code (`0` on error) and the response body. Delivered when a
+     task's ``FirmataTaskRecorder/httpGet(_:statusInto:)`` runs while a host is
+     connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
+     */
     case httpResponse(status: Int, body: String)
 
     /// Unrecognised SysEx message.
@@ -86,19 +88,23 @@ public struct PinState: Sendable {
 
 public struct I2CReply: Sendable {
     public let address: UInt16
-    /// The peripheral's internal register **address** the reply was read from (the
-    /// sub-address written before the read). This is an address *inside the I2C device*
-    /// and is unrelated to the board's on-device logic registers (``TaskNumberRegister``).
+    /**
+     The peripheral's internal register **address** the reply was read from (the
+     sub-address written before the read). This is an address *inside the I2C device*
+     and is unrelated to the board's on-device logic registers (``TaskNumberRegister``).
+     */
     public let registerAddress: UInt16
     public let data: [UInt8]
 }
 
-/// Result of an internet request the device made over its Wi-Fi
-/// (non-standard extension). Returned by ``FirmataClient/httpGet(_:timeout:)``
-/// and ``FirmataClient/httpPost(_:body:timeout:)``.
-/// Result of an encrypted Wi-Fi provisioning op (non-standard extension) —
-/// returned by ``FirmataClient/provisionWiFi(ssid:password:timeout:)`` and
-/// ``FirmataClient/queryWiFiStatus(timeout:)``.
+/**
+ Result of an internet request the device made over its Wi-Fi
+ (non-standard extension). Returned by ``FirmataClient/httpGet(_:timeout:)``
+ and ``FirmataClient/httpPost(_:body:timeout:)``.
+ Result of an encrypted Wi-Fi provisioning op (non-standard extension) —
+ returned by ``FirmataClient/provisionWiFi(ssid:password:timeout:)`` and
+ ``FirmataClient/queryWiFiStatus(timeout:)``.
+ */
 public struct WiFiStatus: Sendable {
     /// `true` if the device is currently joined to Wi-Fi.
     public let connected: Bool
@@ -124,11 +130,13 @@ extension HTTPResponse {
         try JSONSerialization.jsonObject(with: Data(body.utf8), options: options)
     }
 
-    /// Decode the body into a `Decodable` type.
-    /// ```swift
-    /// struct Quote: Decodable { let symbol: String; let price: Double }
-    /// let q = try (await board.httpGet(url)).decode(Quote.self)
-    /// ```
+    /**
+     Decode the body into a `Decodable` type.
+     ```swift
+     struct Quote: Decodable { let symbol: String; let price: Double }
+     let q = try (await board.httpGet(url)).decode(Quote.self)
+     ```
+     */
     public func decode<T: Decodable>(_ type: T.Type, using decoder: JSONDecoder = JSONDecoder()) throws -> T {
         try decoder.decode(type, from: Data(body.utf8))
     }
