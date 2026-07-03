@@ -84,6 +84,16 @@ let light   = try await client.analogRead(channel: 0)         // A0, 0–4095 on
 try await client.digitalWrite(pin: .pin(2), high: false)
 ```
 
+### Servo (firmware 2.8+)
+
+```swift
+try await client.setPinMode(13, mode: .servo)             // default 544–2400 µs range
+try await client.servoWrite(pin: 13, value: 90)           // 0–180 = degrees
+try await client.configureServo(pin: 13, minPulseMicros: 1000, maxPulseMicros: 2000)
+try await client.servoWrite(pin: 13, value: 1500)         // ≥ 544 = raw pulse µs
+// In a task: board.servoWrite(pin: .pin(13), value: 90) after setPinMode(.servo).
+```
+
 ## 4. Input streams
 
 ```swift
@@ -206,6 +216,15 @@ try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
     // .reg(n) is also an operand — read state the host or another task wrote:
     board.ifTrue(.reg(4), .greaterThan, light, then: { $0.digitalWrite(pin: .pin(2), high: true) })
 }
+```
+
+The host reads and writes the same cells live (firmware 2.8+ for the snapshot):
+
+```swift
+try await client.setRegister(4, to: 1500)                 // task ifTrue sees it next pass
+try await client.setFloatRegister(0, to: 21.5)
+let snap = try await client.queryRegisters()              // RegisterSnapshot: 16 ints + 8 floats
+print(snap.ints[4], snap.floats[0])
 ```
 
 Pin a register when the value must outlive auto-allocation wraparound or be

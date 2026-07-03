@@ -50,6 +50,8 @@ public enum FirmataMessage: Sendable {
      connected, or in reply to a live ``FirmataClient/httpGet(_:timeout:)``.
      */
     case httpResponse(status: Int, body: String)
+    /// A live register snapshot (reply to `queryRegisters`): R0–R15 + F0–F7.
+    case registers(RegisterSnapshot)
 
     /// Unrecognised SysEx message.
     case unknownSysEx(id: UInt8, data: [UInt8])
@@ -110,6 +112,15 @@ public struct WiFiStatus: Sendable {
     public let connected: Bool
     /// The device's IP address while connected, else `nil`.
     public let ip: String?
+}
+
+/// All device registers at one instant — the shared state tasks and the host use
+/// to exchange values (reply to ``FirmataClient/queryRegisters(timeout:)``).
+public struct RegisterSnapshot: Sendable, Equatable {
+    /// `R0…R15` (bool results are `0`/`1` in the same bank).
+    public let ints: [Int32]
+    /// `F0…F7`.
+    public let floats: [Float]
 }
 
 public struct HTTPResponse: Sendable {

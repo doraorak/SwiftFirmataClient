@@ -97,6 +97,7 @@ internal enum SysEx {
     internal static let reportFirmware:        UInt8 = 0x79
     internal static let samplingInterval:      UInt8 = 0x7A
     internal static let samplingIntervalQuery: UInt8 = 0x7C
+    internal static let servoConfig:           UInt8 = 0x70
     internal static let schedulerData:         UInt8 = 0x7B
 }
 
@@ -114,6 +115,7 @@ internal enum Sched {
     internal static let queryAllReply: UInt8 = 0x09
     internal static let queryReply:    UInt8 = 0x0A
     internal static let httpReply:     UInt8 = 0x0B  // device -> host: HTTP status + body
+    internal static let regReply:      UInt8 = 0x0C  // device -> host: R0-15 + F0-7 snapshot
 
     // Logic extension (see NONSTANDARD.md). Carried under the standard scheduler's
     // reserved extension command (0x7F), so a base scheduler ignores it cleanly.
@@ -153,4 +155,5 @@ internal enum Sched {
     internal static let extStringCopySlot: UInt8 = 0x2E  // copy one string slot's content into another (changeSlot)
     internal static let extI2CRead:     UInt8 = 0x2F  // R[dst] = bytes read from an I2C device, big-endian (i2cRead)
     internal static let extEmitString:  UInt8 = 0x30  // device -> host STRING_DATA from a running task (sendString)
+    internal static let extRegQuery:    UInt8 = 0x31  // report all registers to the host (regReply)
 }

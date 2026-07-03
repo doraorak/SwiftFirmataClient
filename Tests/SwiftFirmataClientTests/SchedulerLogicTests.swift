@@ -119,3 +119,66 @@ struct SchedulerLogicTests {
         #expect((after as? any TaskRegister)?.index == 13)
     }
 }
+
+// MARK: - Live registers & servo (firmware 2.8+)
+
+@Suite("LiveRegistersServo")
+struct LiveRegistersServoTests {
+    private func makeClient() async -> (FirmataClient, MockTransport) {
+        let t = MockTransport()
+        let c = FirmataClient(transport: t)
+        await c.connect()
+        await Task.yield()
+        return (c, t)
+    }
+    private func limbs(_ v: UInt32) -> [UInt8] { (0..<5).map { UInt8((v >> (7 * $0)) & 0x7F) } }
+
+    @Test func setRegisterBytes() async throws {
+        let (c, t) = await makeClient()
+        try await c.setRegister(3, to: 1500)
+        #expect(t.lastSent == [0xF0, 0x7B, 0x7F, 0x10, 3] + limbs(1500) + [0xF7])
+        await #expect(throws: FirmataError.self) { try await c.setRegister(16, to: 0) }
+    }
+
+    @Test func setFloatRegisterBytes() async throws {
+        let (c, t) = await makeClient()
+        try await c.setFloatRegister(2, to: 3.5)
+        #expect(t.lastSent == [0xF0, 0x7B, 0x7F, 0x1B, 2] + limbs(Float(3.5).bitPattern) + [0xF7])
+    }
+
+    @Test func queryRegistersRoundTrip() async throws {
+        let (c, t) = await makeClient()
+        async let snap = c.queryRegisters()
+        await Task.yield()
+        var ints = [Int32](repeating: 0, count: 16); ints[3] = 1500; ints[15] = -7
+        var floats = [Float](repeating: 0, count: 8); floats[2] = 3.5
+        var frame: [UInt8] = [0xF0, 0x7B, 0x0C]
+        for v in ints   { frame += limbs(UInt32(bitPattern: v)) }
+        for v in floats { frame += limbs(v.bitPattern) }
+        frame.append(0xF7)
+        t.inject(frame)
+        let got = try await snap
+        #expect(got.ints[3] == 1500 && got.ints[15] == -7 && got.floats[2] == 3.5)
+        #expect(t.lastSent == [0xF0, 0x7B, 0x7F, 0x31, 0xF7])
+    }
+
+    @Test func servoBytes() async throws {
+        let (c, t) = await makeClient()
+        try await c.configureServo(pin: 13, minPulseMicros: 600, maxPulseMicros: 2300)
+        #expect(t.lastSent == [0xF0, 0x70, 13,
+                               UInt8(600 & 0x7F), UInt8(600 >> 7),
+                               UInt8(2300 & 0x7F), UInt8(2300 >> 7), 0xF7])
+        try await c.servoWrite(pin: 2, value: 90)                    // pin <= 15: analog message
+        #expect(t.lastSent == [0xE2, 90, 0])
+        try await c.servoWrite(pin: 25, value: 1500)                 // pin > 15: extended analog
+        #expect(t.lastSent?.prefix(3) == [0xF0, 0x6F, 25])
+    }
+
+    @Test func recorderServoWrite() {
+        let r = FirmataTaskRecorder()
+        r.servoWrite(pin: .pin(2), value: 90)
+        #expect(r.bytes == [0xE2, 90, 0])
+        r.servoWrite(pin: .pin(25), value: 1500)
+        #expect(Array(r.bytes.dropFirst(3).prefix(3)) == [0xF0, 0x6F, 25])
+    }
+}

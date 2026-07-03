@@ -164,6 +164,17 @@ public final class FirmataTaskRecorder {
         bytes.append(Cmd.endSysEx)
     }
 
+    /// Record a servo write: `0…180` = degrees, `≥ 544` = pulse µs (same dual
+    /// meaning as the live call). Put the pin in `.servo` mode first.
+    public func servoWrite(pin: TaskPin, value: Int32) {
+        if pin.number <= 15 {
+            let v = UInt16(clamping: value)
+            bytes += [Cmd.analogMessage | (pin.number & 0x0F), UInt8(v & 0x7F), UInt8((v >> 7) & 0x7F)]
+        } else {
+            extendedAnalogWrite(pin: pin, value: value)
+        }
+    }
+
     // MARK: Nested tasks (a task that spawns tasks)
 
     /**

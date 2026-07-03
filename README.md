@@ -20,7 +20,7 @@ Both firmwares speak the identical wire protocol; use whichever toolchain you pr
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "14.4.1")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "14.5.0")
 ```
 
 ## Quick start
@@ -66,6 +66,9 @@ an evicted client receives an `EVICTED` notice and its stream ends.
   `queryAnalogMapping`, `queryPinState`
 - **I²C**: `configureI2C`, `i2cWrite`, `i2cReadOnce`, `i2cStartReading` / `i2cStopReading`
 - **Internet** (the board's Wi-Fi makes the request): `httpGet`, `httpPost`
+- **Servo**: `configureServo` (pulse range), `servoWrite` (0–180° or raw µs) — live and in tasks
+- **Registers** (shared state with tasks): `setRegister`, `setFloatRegister`,
+  `queryRegisters` → all of R0–R15 + F0–F7 in one snapshot
 - **Wi-Fi provisioning** (encrypted X25519 + AES-GCM; works over any transport):
   `provisionWiFi`, `queryWiFiStatus`, `forgetWiFi`
 - **Tasks**: `uploadTask` plus low-level `createTask` / `addToTask` /
@@ -81,7 +84,7 @@ the live API, but captured as bytes and executed on-device by the Firmata
 scheduler. Tasks survive disconnects; they live in RAM until deleted or reboot.
 
 On top of standard Firmata scheduling, the firmwares add an extension
-(ext ops `0x10–0x30` under the scheduler SysEx). Everything below records with
+(ext ops `0x10–0x31` under the scheduler SysEx). Everything below records with
 the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
 
 - **Registers**: 16 shared `Int32` registers `R0–R15` (bools are 0/1 in the same
@@ -105,13 +108,14 @@ the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
 
 | Client feature | Needs firmware |
 |---|---|
+| `queryRegisters`, servo (`configureServo`/`servoWrite`) | ≥ 2.8.0 |
 | `SerialTransport` (Firmata over USB) | ≥ 2.7.0 |
 | Nested tasks (`addTask`/`deleteTask`), task `i2cRead`/`sendString` | ≥ 2.6.0 |
 | Everything else in 14.x | ≥ 2.5.0 |
 
 ## Testing
 
-`swift test` — 115 tests, no hardware needed (a `MockTransport` plays the board,
+`swift test` — 120 tests, no hardware needed (a `MockTransport` plays the board,
 including the provisioning crypto round-trip). The recorder's byte output is
 golden-tested against captures verified on real hardware.
 

@@ -76,6 +76,8 @@ public actor FirmataClient {
     private var pendingAnalogRead:  [UInt64: (channel: UInt8, cont: CheckedContinuation<UInt16, Error>)] = [:]
 
     // Encrypted Wi-Fi provisioning handshake (non-standard extension).
+    private var pendingRegisters:  CheckedContinuation<RegisterSnapshot, Error>?
+    private var registersSeq = 0
     private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
     private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
     /* Generation counters guarding the two single-slot Wi-Fi continuations above:
@@ -197,6 +199,9 @@ public actor FirmataClient {
             // A query for a non-existent task replies with an error -> nil.
             pendingQueryTask.removeValue(forKey: taskId)?.resume(returning: nil)
 
+        case .registers(let snapshot):
+            pop(&pendingRegisters)?.resume(returning: snapshot)
+
         case .httpResponse(let status, let body):
             // Match the oldest in-flight live request (FIFO).
             if let key = pendingHttp.keys.min() {
@@ -221,6 +226,7 @@ public actor FirmataClient {
         pendingPinState.removeAll()
         for queue in pendingI2C.values { for cont in queue { cont.resume(throwing: error) } }
         pendingI2C.removeAll()
+        pop(&pendingRegisters)?.resume(throwing: error)
         pop(&pendingQueryAllTasks)?.resume(throwing: error)
         for cont in pendingQueryTask.values { cont.resume(throwing: error) }
         pendingQueryTask.removeAll()
@@ -643,6 +649,82 @@ public actor FirmataClient {
         }
     }
 
+    // MARK: - Registers & servo (firmware 2.8+)
+
+    /* Registers are the shared state of the task extension: 16 Int32 cells R0-R15
+       and 8 floats F0-F7, global across all tasks AND this live session. These
+       calls read/write them from the host, so a task can react to host-set values
+       (and vice versa) without re-uploading anything. */
+
+    /// Write `R[index] = value` (`index` 0…15) — visible to every task immediately.
+    public func setRegister(_ index: UInt8, to value: Int32) async throws {
+        guard index <= 15 else { throw FirmataError.invalidData }
+        try await transport.send([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand,
+                                  Sched.extSet, index & 0x0F]
+                                 + limbs5(UInt32(bitPattern: value)) + [Cmd.endSysEx])
+    }
+
+    /// Write `F[index] = value` (`index` 0…7).
+    public func setFloatRegister(_ index: UInt8, to value: Float) async throws {
+        guard index <= 7 else { throw FirmataError.invalidData }
+        try await transport.send([Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand,
+                                  Sched.extSetFloat, index & 0x07]
+                                 + limbs5(value.bitPattern) + [Cmd.endSysEx])
+    }
+
+    /// Snapshot all registers (`R0…R15` + `F0…F7`) as the device holds them right now.
+    /// - Throws: ``FirmataError/noResponse`` on timeout.
+    public func queryRegisters(timeout: Duration = .seconds(2)) async throws -> RegisterSnapshot {
+        registersSeq &+= 1
+        let seq = registersSeq
+        return try await withCheckedThrowingContinuation { cont in
+            pendingRegisters = cont
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do {
+                    try await self.transport.send([Cmd.startSysEx, SysEx.schedulerData,
+                                                   Sched.extCommand, Sched.extRegQuery, Cmd.endSysEx])
+                } catch {
+                    if let c = self.pop(&self.pendingRegisters) { c.resume(throwing: error) }
+                    self.clearInFlight(token); return
+                }
+                try? await Task.sleep(for: timeout)
+                if seq == self.registersSeq, let c = self.pop(&self.pendingRegisters) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
+                self.clearInFlight(token)
+            }
+        }
+    }
+
+    /// Configure a pin as a servo output with a pulse range (standard `SERVO_CONFIG`).
+    /// `setPinMode(pin, mode: .servo)` is the shorthand for the 544–2400 µs default.
+    public func configureServo(pin: UInt8,
+                               minPulseMicros: UInt16 = 544,
+                               maxPulseMicros: UInt16 = 2400) async throws {
+        try await transport.send([Cmd.startSysEx, SysEx.servoConfig, pin & 0x7F,
+                                  UInt8(minPulseMicros & 0x7F), UInt8((minPulseMicros >> 7) & 0x7F),
+                                  UInt8(maxPulseMicros & 0x7F), UInt8((maxPulseMicros >> 7) & 0x7F),
+                                  Cmd.endSysEx])
+    }
+
+    /// Drive a servo pin: `0…180` is an angle in degrees; `≥ 544` is a raw pulse
+    /// width in µs (standard Firmata dual meaning). Routes through the analog
+    /// message for pins ≤ 15 and extended analog above.
+    public func servoWrite(pin: UInt8, value: Int32) async throws {
+        if pin <= 15 {
+            let v = UInt16(clamping: value)
+            try await transport.send([Cmd.analogMessage | (pin & 0x0F),
+                                      UInt8(v & 0x7F), UInt8((v >> 7) & 0x7F)])
+        } else {
+            try await extendedAnalogWrite(pin: pin, value: value)
+        }
+    }
+
+    private func limbs5(_ v: UInt32) -> [UInt8] {
+        (0..<5).map { UInt8((v >> (7 * $0)) & 0x7F) }
+    }
+
     // MARK: - Queries
 
     /// Request the protocol version. Returns when the device replies.
@@ -1063,5 +1145,9 @@ public extension FirmataClient {
     /// Query a pin's current mode + value — `.pin(7)`.
     func queryPinState(pin: FirmataPin) async throws -> PinState {
         try await queryPinState(pin: pin.number)
+    }
+    /// Servo write — `.pin(13)`; `0…180` = degrees, `≥ 544` = pulse µs.
+    func servoWrite(pin: FirmataPin, value: Int32) async throws {
+        try await servoWrite(pin: pin.number, value: value)
     }
 }

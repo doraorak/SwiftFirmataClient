@@ -141,6 +141,18 @@ public struct FirmataParser: Sendable {
             return .schedulerTask(SchedulerTask(id: id, timeMs: timeMs, length: length,
                                                 position: pos, data: taskData))
 
+        case Sched.regReply:
+            // 16 ints + 8 floats, each as 5 little-endian 7-bit limbs.
+            guard body.count >= 24 * 5 else { return nil }
+            func value(_ i: Int) -> UInt32 {
+                var v: UInt32 = 0
+                for k in 0..<5 { v |= UInt32(body[i * 5 + k] & 0x7F) << (7 * k) }
+                return v
+            }
+            let ints   = (0..<16).map { Int32(bitPattern: value($0)) }
+            let floats = (16..<24).map { Float(bitPattern: value($0)) }
+            return .registers(RegisterSnapshot(ints: ints, floats: floats))
+
         default:
             return .unknownSysEx(id: SysEx.schedulerData, data: data)
         }
