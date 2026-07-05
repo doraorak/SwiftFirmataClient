@@ -113,7 +113,8 @@ depends on this one**, adding typed `FirmataClient` / recorder extensions — im
 the ones you need.
 
 ```swift
-guard try await board.queryModules().contains(where: { $0.id == IRModule.id }) else { return }
+guard try await board.queryModules().contains(where: { $0.name == "ir" }) else { return }
+// (each module package also ships a typed check, e.g. SwiftFirmataIR's `board.hasIRModule()`)
 ```
 
 | ID | Module | Ver | Purpose | Package |
