@@ -100,9 +100,31 @@ public struct FirmataParser: Sendable {
         case SysEx.stringData:            return .stringData(decode7BitPairs(payload))
         case SysEx.i2cReply:              return parseI2CReply(payload)
         case SysEx.extendedAnalog:        return parseExtendedAnalog(payload)
+        case SysEx.moduleData:            return parseModule(payload)
         case SysEx.schedulerData:         return parseScheduler(payload)
         default:                          return .unknownSysEx(id: id, data: payload)
         }
+    }
+
+    private func parseModule(_ payload: [UInt8]) -> FirmataMessage? {
+        guard let first = payload.first else { return nil }
+        let body = Array(payload.dropFirst())
+        if first == Module.listReply {
+            guard let count = body.first else { return .modules([]) }
+            var mods: [ModuleInfo] = []
+            var i = 1
+            for _ in 0..<count {
+                guard i + 3 < body.count else { break }
+                let id = body[i], maj = body[i+1], mnr = body[i+2]
+                let len = Int(body[i+3]); i += 4
+                guard i + len <= body.count else { break }
+                let name = String(decoding: body[i..<i+len].map { $0 & 0x7F }, as: UTF8.self)
+                i += len
+                mods.append(ModuleInfo(id: id, name: name, major: maj, minor: mnr))
+            }
+            return .modules(mods)
+        }
+        return .moduleEvent(id: first, payload: body)
     }
 
     private func parseScheduler(_ data: [UInt8]) -> FirmataMessage? {

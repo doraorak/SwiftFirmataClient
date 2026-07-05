@@ -182,3 +182,76 @@ struct LiveRegistersServoTests {
         #expect(Array(r.bytes.dropFirst(3).prefix(3)) == [0xF0, 0x6F, 25])
     }
 }
+
+// MARK: - Operand-valued pin writes (firmware 2.9+)
+
+@Suite("OperandWrites")
+struct OperandWriteTests {
+    @Test func operandWriteBytes() {
+        let r = FirmataTaskRecorder()
+        r.analogWrite(pin: .pin(4), value: .reg(5))
+        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x32, 1, 4, 0x00, 5, 0xF7])
+
+        let r2 = FirmataTaskRecorder()
+        r2.servoWrite(pin: .pin(13), value: .reg(6))
+        #expect(r2.bytes == [0xF0, 0x7B, 0x7F, 0x32, 1, 13, 0x00, 6, 0xF7])
+
+        let r3 = FirmataTaskRecorder()
+        r3.digitalWrite(pin: .pin(2), high: .boolReg(3))
+        #expect(r3.bytes == [0xF0, 0x7B, 0x7F, 0x32, 0, 2, 0x00, 3, 0xF7])
+    }
+
+    @Test func operandWriteFromTaskVariable() {
+        let r = FirmataTaskRecorder()
+        let light = r.analogRead(channel: .channel(0))     // auto -> R15
+        r.analogWrite(pin: .pin(4), value: light)          // PWM follows the reading
+        #expect(Array(r.bytes.suffix(9)) == [0xF0, 0x7B, 0x7F, 0x32, 1, 4, 0x00, 15, 0xF7])
+    }
+}
+
+// MARK: - Module subsystem + IR module (firmware 2.9+)
+
+@Suite("Modules")
+struct ModuleTests {
+    private func makeClient() async -> (FirmataClient, MockTransport) {
+        let t = MockTransport()
+        let c = FirmataClient(transport: t)
+        await c.connect()
+        await Task.yield()
+        return (c, t)
+    }
+
+    @Test func queryModulesRoundTrip() async throws {
+        let (c, t) = await makeClient()
+        async let mods = c.queryModules()
+        await Task.yield()
+        // reply: one module — id 1, v1.0, name "ir"
+        t.inject([0xF0, 0x0D, 0x7F, 1, 0x01, 1, 0, 2, 0x69, 0x72, 0xF7])
+        let got = try await mods
+        #expect(got == [ModuleInfo(id: 1, name: "ir", major: 1, minor: 0)])
+        #expect(t.lastSent == [0xF0, 0x0D, 0x00, 0xF7])
+    }
+
+    // Generic module transport primitives (protocol-specific modules — e.g. the IR
+    // module — live in their own packages and test their own byte formats).
+    @Test func moduleOpBytes() async throws {
+        let (c, t) = await makeClient()
+        try await c.sendToModule(id: 0x42, payload: [1, 2, 3])
+        #expect(t.lastSent == [0xF0, 0x0D, 0x42, 1, 2, 3, 0xF7])
+        let r = FirmataTaskRecorder()
+        r.moduleOp(id: 0x42, payload: [1, 2, 3])
+        #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x33, 0x42, 1, 2, 3, 0xF7])
+    }
+
+    @Test func moduleEventParses() {
+        // Any first byte 0x01–0x7E is a module id; the parser surfaces it as a moduleEvent.
+        var p = FirmataParser()
+        let frame: [UInt8] = [0xF0, 0x0D, 0x05, 0x11, 0x22, 0xF7]
+        let msgs = frame.compactMap { p.consume($0) }
+        guard case let .moduleEvent(id, payload) = msgs.first else {
+            Issue.record("expected moduleEvent, got \(msgs)"); return
+        }
+        #expect(id == 5)
+        #expect(payload == [0x11, 0x22])
+    }
+}

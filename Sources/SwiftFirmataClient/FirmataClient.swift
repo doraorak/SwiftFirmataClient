@@ -78,6 +78,8 @@ public actor FirmataClient {
     // Encrypted Wi-Fi provisioning handshake (non-standard extension).
     private var pendingRegisters:  CheckedContinuation<RegisterSnapshot, Error>?
     private var registersSeq = 0
+    private var pendingModules:    CheckedContinuation<[ModuleInfo], Error>?
+    private var modulesSeq = 0
     private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
     private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
     /* Generation counters guarding the two single-slot Wi-Fi continuations above:
@@ -202,6 +204,9 @@ public actor FirmataClient {
         case .registers(let snapshot):
             pop(&pendingRegisters)?.resume(returning: snapshot)
 
+        case .modules(let list):
+            pop(&pendingModules)?.resume(returning: list)
+
         case .httpResponse(let status, let body):
             // Match the oldest in-flight live request (FIFO).
             if let key = pendingHttp.keys.min() {
@@ -227,6 +232,7 @@ public actor FirmataClient {
         for queue in pendingI2C.values { for cont in queue { cont.resume(throwing: error) } }
         pendingI2C.removeAll()
         pop(&pendingRegisters)?.resume(throwing: error)
+        pop(&pendingModules)?.resume(throwing: error)
         pop(&pendingQueryAllTasks)?.resume(throwing: error)
         for cont in pendingQueryTask.values { cont.resume(throwing: error) }
         pendingQueryTask.removeAll()
@@ -647,6 +653,44 @@ public actor FirmataClient {
             pop(&pendingWiFiStatus)?.resume(returning: (code, ip))
         default: break
         }
+    }
+
+    // MARK: - Modules (optional firmware features, 2.9+)
+
+    /* Modules are compile-time firmware plugins behind one reserved SysEx: discover
+       them at runtime, then talk to one by id. Typed wrappers (like ``ir``) sit on
+       top of these two generic calls. */
+
+    /// List the modules this firmware was built with (empty on older firmwares —
+    /// which never reply, so this times out; treat a timeout as "no module support").
+    public func queryModules(timeout: Duration = .seconds(2)) async throws -> [ModuleInfo] {
+        modulesSeq &+= 1
+        let seq = modulesSeq
+        return try await withCheckedThrowingContinuation { cont in
+            pendingModules = cont
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do {
+                    try await self.transport.send([Cmd.startSysEx, SysEx.moduleData, Module.query, Cmd.endSysEx])
+                } catch {
+                    if let c = self.pop(&self.pendingModules) { c.resume(throwing: error) }
+                    self.clearInFlight(token); return
+                }
+                try? await Task.sleep(for: timeout)
+                if seq == self.modulesSeq, let c = self.pop(&self.pendingModules) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
+                self.clearInFlight(token)
+            }
+        }
+    }
+
+    /// Send a raw payload to module `id` (its own protocol; bytes must be 7-bit).
+    /// Module events come back on ``messages`` as ``FirmataMessage/moduleEvent(id:payload:)``.
+    public func sendToModule(id: UInt8, payload: [UInt8]) async throws {
+        guard (0x01...0x7E).contains(id) else { throw FirmataError.invalidData }
+        try await transport.send([Cmd.startSysEx, SysEx.moduleData, id]
+                                 + payload.map { $0 & 0x7F } + [Cmd.endSysEx])
     }
 
     // MARK: - Registers & servo (firmware 2.8+)
@@ -1149,5 +1193,13 @@ public extension FirmataClient {
     /// Servo write — `.pin(13)`; `0…180` = degrees, `≥ 544` = pulse µs.
     func servoWrite(pin: FirmataPin, value: Int32) async throws {
         try await servoWrite(pin: pin.number, value: value)
+    }
+    /// Servo pulse-range config — `.pin(13)`.
+    func configureServo(pin: FirmataPin,
+                        minPulseMicros: UInt16 = 544,
+                        maxPulseMicros: UInt16 = 2400) async throws {
+        try await configureServo(pin: pin.number,
+                                 minPulseMicros: minPulseMicros,
+                                 maxPulseMicros: maxPulseMicros)
     }
 }

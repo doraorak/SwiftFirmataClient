@@ -104,10 +104,29 @@ the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
   one. Never reuse the enclosing task's own id.
 - **Telemetry**: `sendString` (task → host), `heapStats`.
 
+## Modules
+
+Optional hardware subsystems sit behind two generic primitives — `queryModules()`
+(discover what the connected firmware actually has) and `sendToModule(id:payload:)` /
+`FirmataTaskRecorder.moduleOp(id:payload:)`. Each module ships as its **own package that
+depends on this one**, adding typed `FirmataClient` / recorder extensions — import only
+the ones you need.
+
+```swift
+guard try await board.queryModules().contains(where: { $0.id == IRModule.id }) else { return }
+```
+
+| ID | Module | Ver | Purpose | Package |
+|----|--------|-----|---------|---------|
+| `0x01` | `ir` | 1.0 | Infrared NEC/RC6 transmit + NEC receive (RMT) | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) |
+
+Module ids are a shared registry across packages — claim the next free id when adding one.
+
 ## Firmware compatibility
 
 | Client feature | Needs firmware |
 |---|---|
+| Modules (`queryModules`), IR (`SwiftFirmataIR`) | ≥ 2.9.0 |
 | `queryRegisters`, servo (`configureServo`/`servoWrite`) | ≥ 2.8.0 |
 | `SerialTransport` (Firmata over USB) | ≥ 2.7.0 |
 | Nested tasks (`addTask`/`deleteTask`), task `i2cRead`/`sendString` | ≥ 2.6.0 |
@@ -115,7 +134,7 @@ the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
 
 ## Testing
 
-`swift test` — 120 tests, no hardware needed (a `MockTransport` plays the board,
+`swift test` — 125 tests, no hardware needed (a `MockTransport` plays the board,
 including the provisioning crypto round-trip). The recorder's byte output is
 golden-tested against captures verified on real hardware.
 

@@ -164,6 +164,31 @@ public final class FirmataTaskRecorder {
         bytes.append(Cmd.endSysEx)
     }
 
+    /* Operand-valued writes (firmware 2.9+): the value comes from a register or a
+       task variable instead of a compile-time literal — the bridge from "task
+       computed something" to "pin outputs it". */
+
+    /// Record a digital write whose level is an **operand**: HIGH when non-zero.
+    /// The pin must be in `.output` mode.
+    public func digitalWrite(pin: TaskPin, high: TaskBool) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extWritePin,
+                  0, pin.number & 0x7F] + high.operandBytes + [Cmd.endSysEx]
+    }
+
+    /// Record an analog write whose value is an **operand** (register / variable /
+    /// literal), routed by the pin's mode on the device: PWM duty for `.pwm` pins,
+    /// degrees-or-µs for `.servo` pins. Works for any pin 0–127. Float operands truncate.
+    public func analogWrite(pin: TaskPin, value: TaskOperand) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extWritePin,
+                  1, pin.number & 0x7F] + value.operandBytes + [Cmd.endSysEx]
+    }
+
+    /// Record a servo write whose angle/pulse comes from an **operand** — the same
+    /// wire op as ``analogWrite(pin:value:)`` (the device routes by pin mode).
+    public func servoWrite(pin: TaskPin, value: TaskOperand) {
+        analogWrite(pin: pin, value: value)
+    }
+
     /// Record a servo write: `0…180` = degrees, `≥ 544` = pulse µs (same dual
     /// meaning as the live call). Put the pin in `.servo` mode first.
     public func servoWrite(pin: TaskPin, value: Int32) {
@@ -173,6 +198,14 @@ public final class FirmataTaskRecorder {
         } else {
             extendedAnalogWrite(pin: pin, value: value)
         }
+    }
+
+    /// Record "deliver `payload` to module `id`" — the task-side twin of
+    /// ``FirmataClient/sendToModule(id:payload:)`` (firmware 2.9+). Payload bytes
+    /// are the module's own protocol; typed wrappers (like ``ir``) build them for you.
+    public func moduleOp(id: UInt8, payload: [UInt8]) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extModuleOp,
+                  id & 0x7F] + payload.map { $0 & 0x7F } + [Cmd.endSysEx]
     }
 
     // MARK: Nested tasks (a task that spawns tasks)

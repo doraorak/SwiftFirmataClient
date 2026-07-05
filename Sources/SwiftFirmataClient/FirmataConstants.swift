@@ -97,11 +97,20 @@ internal enum SysEx {
     internal static let reportFirmware:        UInt8 = 0x79
     internal static let samplingInterval:      UInt8 = 0x7A
     internal static let samplingIntervalQuery: UInt8 = 0x7C
+    internal static let moduleData:            UInt8 = 0x0D  // module subsystem (user range)
     internal static let servoConfig:           UInt8 = 0x70
     internal static let schedulerData:         UInt8 = 0x7B
 }
 
 /// Scheduler sub-commands (first payload byte after `SysEx.schedulerData`).
+/// Module-subsystem subcommands (first byte after `SysEx.moduleData`).
+internal enum Module {
+    internal static let query:     UInt8 = 0x00  // host -> dev: list installed modules
+    internal static let listReply: UInt8 = 0x7F  // dev -> host: <n> [<id> <maj> <min> <len> <name…>]*
+    // Any other first byte 0x01–0x7E is a module id: the rest of the payload is the
+    // module's own protocol (host -> module, or module event -> host).
+}
+
 internal enum Sched {
     internal static let create:        UInt8 = 0x00
     internal static let delete:        UInt8 = 0x01
@@ -156,4 +165,6 @@ internal enum Sched {
     internal static let extI2CRead:     UInt8 = 0x2F  // R[dst] = bytes read from an I2C device, big-endian (i2cRead)
     internal static let extEmitString:  UInt8 = 0x30  // device -> host STRING_DATA from a running task (sendString)
     internal static let extRegQuery:    UInt8 = 0x31  // report all registers to the host (regReply)
+    internal static let extWritePin:    UInt8 = 0x32  // write a pin from an operand: kind pin <operand>
+    internal static let extModuleOp:    UInt8 = 0x33  // deliver a payload to a module from a task
 }

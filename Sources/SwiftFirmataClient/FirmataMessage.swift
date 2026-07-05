@@ -52,6 +52,10 @@ public enum FirmataMessage: Sendable {
     case httpResponse(status: Int, body: String)
     /// A live register snapshot (reply to `queryRegisters`): R0–R15 + F0–F7.
     case registers(RegisterSnapshot)
+    /// Reply to `queryModules`: the firmware's installed optional modules.
+    case modules([ModuleInfo])
+    /// An event a module pushed to the host (`id` = module id, payload = its own protocol).
+    case moduleEvent(id: UInt8, payload: [UInt8])
 
     /// Unrecognised SysEx message.
     case unknownSysEx(id: UInt8, data: [UInt8])
@@ -121,6 +125,20 @@ public struct RegisterSnapshot: Sendable, Equatable {
     public let ints: [Int32]
     /// `F0…F7`.
     public let floats: [Float]
+}
+
+/// One installed firmware module (reply to ``FirmataClient/queryModules(timeout:)``).
+public struct ModuleInfo: Sendable, Equatable, Identifiable {
+    /// Module id (`0x01–0x7E`) — addresses MODULE_DATA payloads and task module ops.
+    public let id: UInt8
+    public let name: String
+    public let major: UInt8
+    public let minor: UInt8
+    public var version: String { "\(major).\(minor)" }
+
+    public init(id: UInt8, name: String, major: UInt8, minor: UInt8) {
+        self.id = id; self.name = name; self.major = major; self.minor = minor
+    }
 }
 
 public struct HTTPResponse: Sendable {
