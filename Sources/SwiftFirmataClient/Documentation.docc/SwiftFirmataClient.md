@@ -12,8 +12,8 @@ Every call is `async`; board→host traffic arrives on ``FirmataClient/messages`
 let client = FirmataClient(transport: BonjourTransport())
 await client.connect()
 
-try await client.setPinMode(2, mode: .output)
-try await client.digitalWrite(pin: 2, high: true)
+try await client.setPinMode(.pin(2), mode: .output)
+try await client.digitalWrite(pin: .pin(2), high: true)
 
 // Runs on the board, forever, with nobody connected:
 try await client.uploadTask(id: 1, repeatEvery: .milliseconds(500)) { board in

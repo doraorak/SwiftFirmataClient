@@ -69,16 +69,16 @@ for await message in client.messages {
 ## 3. Digital & analog I/O
 
 ```swift
-try await client.setPinMode(2, mode: .output)        // .input .inputPullup .analog .pwm .servo
-try await client.digitalWrite(pin: 2, high: true)
+try await client.setPinMode(.pin(2), mode: .output)        // .input .inputPullup .analog .pwm .servo
+try await client.digitalWrite(pin: .pin(2), high: true)
 try await client.writeDigitalPort(0, pinMask: 0b0000_0100)   // 8 pins at once
 
-try await client.setPinMode(4, mode: .pwm)
-try await client.analogWrite(channel: 4, value: 128)          // 0–255 duty
-try await client.extendedAnalogWrite(pin: 25, value: 1500)    // pins ≥ 16 / wide values
+try await client.setPinMode(.pin(4), mode: .pwm)
+try await client.analogWrite(channel: .channel(4), value: 128)          // 0–255 duty
+try await client.extendedAnalogWrite(pin: .pin(25), value: 1500)    // pins ≥ 16 / wide values
 
-let pressed = try await client.digitalRead(pin: 7)            // one-shot, auto-reports
-let light   = try await client.analogRead(channel: 0)         // A0, 0–4095 on ESP32
+let pressed = try await client.digitalRead(pin: .pin(7))            // one-shot, auto-reports
+let light   = try await client.analogRead(channel: .channel(0))         // A0, 0–4095 on ESP32
 
 // Typed spellings exist for every call: .pin(2) / .channel(0).
 try await client.digitalWrite(pin: .pin(2), high: false)
@@ -87,10 +87,10 @@ try await client.digitalWrite(pin: .pin(2), high: false)
 ### Servo (firmware 2.8+)
 
 ```swift
-try await client.setPinMode(13, mode: .servo)             // default 544–2400 µs range
-try await client.servoWrite(pin: 13, value: 90)           // 0–180 = degrees
-try await client.configureServo(pin: 13, minPulseMicros: 1000, maxPulseMicros: 2000)
-try await client.servoWrite(pin: 13, value: 1500)         // ≥ 544 = raw pulse µs
+try await client.setPinMode(.pin(13), mode: .servo)             // default 544–2400 µs range
+try await client.servoWrite(pin: .pin(13), value: 90)           // 0–180 = degrees
+try await client.configureServo(pin: .pin(13), minPulseMicros: 1000, maxPulseMicros: 2000)
+try await client.servoWrite(pin: .pin(13), value: 1500)         // ≥ 544 = raw pulse µs
 // In a task: board.servoWrite(pin: .pin(13), value: 90) after setPinMode(.servo).
 ```
 
@@ -98,7 +98,7 @@ try await client.servoWrite(pin: 13, value: 1500)         // ≥ 544 = raw pulse
 
 ```swift
 try await client.setSamplingInterval(.milliseconds(100))
-try await client.reportAnalogChannel(0, enable: true)     // -> .analog messages
+try await client.reportAnalogChannel(.channel(0), enable: true)     // -> .analog messages
 try await client.reportDigitalPort(0, enable: true)       // -> .digitalPort on change
 ```
 

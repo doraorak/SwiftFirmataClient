@@ -164,13 +164,13 @@ struct LiveRegistersServoTests {
 
     @Test func servoBytes() async throws {
         let (c, t) = await makeClient()
-        try await c.configureServo(pin: 13, minPulseMicros: 600, maxPulseMicros: 2300)
+        try await c.configureServo(pin: .pin(13), minPulseMicros: 600, maxPulseMicros: 2300)
         #expect(t.lastSent == [0xF0, 0x70, 13,
                                UInt8(600 & 0x7F), UInt8(600 >> 7),
                                UInt8(2300 & 0x7F), UInt8(2300 >> 7), 0xF7])
-        try await c.servoWrite(pin: 2, value: 90)                    // pin <= 15: analog message
+        try await c.servoWrite(pin: .pin(2), value: 90)                    // pin <= 15: analog message
         #expect(t.lastSent == [0xE2, 90, 0])
-        try await c.servoWrite(pin: 25, value: 1500)                 // pin > 15: extended analog
+        try await c.servoWrite(pin: .pin(25), value: 1500)                 // pin > 15: extended analog
         #expect(t.lastSent?.prefix(3) == [0xF0, 0x6F, 25])
     }
 

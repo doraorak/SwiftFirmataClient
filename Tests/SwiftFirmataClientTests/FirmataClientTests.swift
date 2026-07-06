@@ -23,25 +23,25 @@ struct FirmataClientTests {
 
     @Test func setOutputMode() async throws {
         let (client, transport) = await makeClient()
-        try await client.setPinMode(13, mode: .output)
+        try await client.setPinMode(.pin(13), mode: .output)
         #expect(transport.lastSent == [0xF4, 13, 0x01])
     }
 
     @Test func setPullupMode() async throws {
         let (client, transport) = await makeClient()
-        try await client.setPinMode(2, mode: .inputPullup)
+        try await client.setPinMode(.pin(2), mode: .inputPullup)
         #expect(transport.lastSent == [0xF4, 2, 0x0B])
     }
 
     @Test func digitalWriteHigh() async throws {
         let (client, transport) = await makeClient()
-        try await client.digitalWrite(pin: 13, high: true)
+        try await client.digitalWrite(pin: .pin(13), high: true)
         #expect(transport.lastSent == [0xF5, 13, 0x01])
     }
 
     @Test func digitalWriteLow() async throws {
         let (client, transport) = await makeClient()
-        try await client.digitalWrite(pin: 13, high: false)
+        try await client.digitalWrite(pin: .pin(13), high: false)
         #expect(transport.lastSent == [0xF5, 13, 0x00])
     }
 
@@ -74,14 +74,14 @@ struct FirmataClientTests {
     @Test func analogWriteStandard() async throws {
         let (client, transport) = await makeClient()
         // pin 3, value 512 = 0x200 => LSB=0x00, MSB=0x04
-        try await client.analogWrite(channel: 3, value: 512)
+        try await client.analogWrite(channel: .channel(3), value: 512)
         #expect(transport.lastSent == [0xE3, 0x00, 0x04])
     }
 
     @Test func analogWriteHighPin() async throws {
         let (client, transport) = await makeClient()
         // Pin 16 must use extended analog SysEx
-        try await client.analogWrite(channel: 16, value: 100)
+        try await client.analogWrite(channel: .channel(16), value: 100)
         let sent = transport.lastSent ?? []
         #expect(sent.first == 0xF0)
         #expect(sent[1] == 0x6F)           // EXTENDED_ANALOG
@@ -93,13 +93,13 @@ struct FirmataClientTests {
         let (client, transport) = await makeClient()
         // 1000 = 0x3E8 = 0b11_1110_1000
         // 7-bit chunks: bits[0-6]=0x68, bits[7-9]=0x07
-        try await client.extendedAnalogWrite(pin: 9, value: 1000)
+        try await client.extendedAnalogWrite(pin: .pin(9), value: 1000)
         #expect(transport.lastSent == [0xF0, 0x6F, 9, 0x68, 0x07, 0xF7])
     }
 
     @Test func reportAnalogChannel() async throws {
         let (client, transport) = await makeClient()
-        try await client.reportAnalogChannel(0, enable: true)
+        try await client.reportAnalogChannel(.channel(0), enable: true)
         #expect(transport.lastSent == [0xC0, 0x01])
     }
 
@@ -172,7 +172,7 @@ struct FirmataClientTests {
 
     @Test func queryPinState() async throws {
         let (client, transport) = await makeClient()
-        async let state = client.queryPinState(pin: 13)
+        async let state = client.queryPinState(pin: .pin(13))
         await Task.yield()
         transport.injectPinState(pin: 13, mode: .output, value: 1)
         let s = try await state

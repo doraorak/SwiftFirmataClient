@@ -31,8 +31,8 @@ import SwiftFirmataClient
 let client = FirmataClient(transport: BonjourTransport())   // finds the board via mDNS
 await client.connect()
 
-try await client.setPinMode(2, mode: .output)
-try await client.digitalWrite(pin: 2, high: true)           // LED on
+try await client.setPinMode(.pin(2), mode: .output)
+try await client.digitalWrite(pin: .pin(2), high: true)           // LED on
 
 // A task the board runs by itself — forever, even with nobody connected:
 try await client.uploadTask(id: 1, repeatEvery: .milliseconds(500)) { board in

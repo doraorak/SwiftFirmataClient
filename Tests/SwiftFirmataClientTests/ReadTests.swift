@@ -14,7 +14,7 @@ struct ReadTests {
 
     @Test func digitalReadReturnsPinBit() async throws {
         let (client, transport) = await connected()
-        async let read = client.digitalRead(pin: 2)
+        async let read = client.digitalRead(pin: .pin(2))
         await Task.yield()
         transport.injectDigital(port: 0, pinMask: 0b0000_0100)   // pin 2 HIGH
         let value = try await read
@@ -25,7 +25,7 @@ struct ReadTests {
 
     @Test func digitalReadLow() async throws {
         let (client, transport) = await connected()
-        async let read = client.digitalRead(pin: 5)
+        async let read = client.digitalRead(pin: .pin(5))
         await Task.yield()
         transport.injectDigital(port: 0, pinMask: 0b0000_0100)   // pin 5 is LOW here
         #expect(try await read == false)
@@ -33,7 +33,7 @@ struct ReadTests {
 
     @Test func analogReadReturnsValue() async throws {
         let (client, transport) = await connected()
-        async let read = client.analogRead(channel: 0)
+        async let read = client.analogRead(channel: .channel(0))
         await Task.yield()
         transport.injectAnalog(channel: 0, value: 512)
         #expect(try await read == 512)
@@ -43,7 +43,7 @@ struct ReadTests {
     @Test func digitalReadTimesOut() async {
         let (client, _) = await connected()
         await #expect(throws: FirmataError.self) {
-            _ = try await client.digitalRead(pin: 2, timeout: .milliseconds(40))
+            _ = try await client.digitalRead(pin: .pin(2), timeout: .milliseconds(40))
         }
     }
 }

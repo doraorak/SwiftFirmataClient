@@ -272,7 +272,7 @@ public actor FirmataClient {
        - mode: The role the pin should take — see ``PinMode`` (`.input`,
          `.output`, `.inputPullup`, `.analog`, `.pwm`, `.servo`, `.i2c`, …).
      */
-    public func setPinMode(_ pin: UInt8, mode: PinMode) async throws {
+    private func setPinMode(_ pin: UInt8, mode: PinMode) async throws {
         try await transport.send([Cmd.setPinMode, pin, mode.rawValue])
     }
 
@@ -283,7 +283,7 @@ public actor FirmataClient {
        - pin: The board pin number to drive.
        - high: `true` for HIGH (logic 1), `false` for LOW (logic 0).
      */
-    public func digitalWrite(pin: UInt8, high: Bool) async throws {
+    private func digitalWrite(pin: UInt8, high: Bool) async throws {
         try await transport.send([Cmd.setDigitalPinValue, pin, high ? 0x01 : 0x00])
     }
 
@@ -337,7 +337,7 @@ public actor FirmataClient {
      - Returns: `true` for HIGH, `false` for LOW.
      - Throws: ``FirmataError/noResponse`` if no report arrives within `timeout`.
      */
-    public func digitalRead(pin: UInt8, timeout: Duration = .seconds(2)) async throws -> Bool {
+    private func digitalRead(pin: UInt8, timeout: Duration = .seconds(2)) async throws -> Bool {
         let port = pin >> 3
         let wasReporting = digitalReportingPorts.contains(port)
         try await reportDigitalPort(port, enable: true)   // forces an immediate resend
@@ -375,7 +375,7 @@ public actor FirmataClient {
          pin's PWM resolution from the capability response (e.g. `0`-`255` for an
          8-bit pin, `0`-`1023` for 10-bit).
      */
-    public func analogWrite(channel: UInt8, value: UInt16) async throws {
+    private func analogWrite(channel: UInt8, value: UInt16) async throws {
         if channel < 16 {
             let cmd: UInt8 = Cmd.analogMessage | (channel & 0x0F)
             try await transport.send([cmd, UInt8(value & 0x7F), UInt8((value >> 7) & 0x7F)])
@@ -385,7 +385,7 @@ public actor FirmataClient {
     }
 
     /// Extended analog write for pins ≥ 16 or values wider than 14 bits (e.g. servo µs).
-    public func extendedAnalogWrite(pin: UInt8, value: Int32) async throws {
+    private func extendedAnalogWrite(pin: UInt8, value: Int32) async throws {
         var bytes: [UInt8] = [Cmd.startSysEx, SysEx.extendedAnalog, pin]
         encode7Bit(int32: value, into: &bytes)
         bytes.append(Cmd.endSysEx)
@@ -403,7 +403,7 @@ public actor FirmataClient {
          ``queryAnalogMapping()``.
        - enable: `true` to start sampling, `false` to stop.
      */
-    public func reportAnalogChannel(_ channel: UInt8, enable: Bool) async throws {
+    private func reportAnalogChannel(_ channel: UInt8, enable: Bool) async throws {
         let cmd: UInt8 = Cmd.reportAnalogChannel | (channel & 0x0F)
         try await transport.send([cmd, enable ? 0x01 : 0x00])
         if enable { analogReportingChannels.insert(channel) } else { analogReportingChannels.remove(channel) }
@@ -427,7 +427,7 @@ public actor FirmataClient {
      - Returns: The raw ADC value (width depends on the board's ADC resolution).
      - Throws: ``FirmataError/noResponse`` if no sample arrives within `timeout`.
      */
-    public func analogRead(channel: UInt8, timeout: Duration = .seconds(2)) async throws -> UInt16 {
+    private func analogRead(channel: UInt8, timeout: Duration = .seconds(2)) async throws -> UInt16 {
         let wasReporting = analogReportingChannels.contains(channel)
         try await reportAnalogChannel(channel, enable: true)
         let id = nextReadID()
@@ -743,7 +743,7 @@ public actor FirmataClient {
 
     /// Configure a pin as a servo output with a pulse range (standard `SERVO_CONFIG`).
     /// `setPinMode(pin, mode: .servo)` is the shorthand for the 544–2400 µs default.
-    public func configureServo(pin: UInt8,
+    private func configureServo(pin: UInt8,
                                minPulseMicros: UInt16 = 544,
                                maxPulseMicros: UInt16 = 2400) async throws {
         try await transport.send([Cmd.startSysEx, SysEx.servoConfig, pin & 0x7F,
@@ -755,7 +755,7 @@ public actor FirmataClient {
     /// Drive a servo pin: `0…180` is an angle in degrees; `≥ 544` is a raw pulse
     /// width in µs (standard Firmata dual meaning). Routes through the analog
     /// message for pins ≤ 15 and extended analog above.
-    public func servoWrite(pin: UInt8, value: Int32) async throws {
+    private func servoWrite(pin: UInt8, value: Int32) async throws {
         if pin <= 15 {
             let v = UInt16(clamping: value)
             try await transport.send([Cmd.analogMessage | (pin & 0x0F),
@@ -837,7 +837,7 @@ public actor FirmataClient {
     }
 
     /// Request the current mode and value of a pin.
-    public func queryPinState(pin: UInt8) async throws -> PinState {
+    private func queryPinState(pin: UInt8) async throws -> PinState {
         return try await withCheckedThrowingContinuation { continuation in
             pendingPinState[pin] = continuation
             Task {
@@ -1153,10 +1153,9 @@ public struct FirmataChannel: Sendable {
     public static func channel(_ number: UInt8) -> FirmataChannel { FirmataChannel(number) }
 }
 
-/* Convenience overloads that take ``FirmataPin`` / ``FirmataChannel`` (`.pin(13)` /
-   `.channel(0)`) for call-site clarity. They forward to the bare-`UInt8` versions, which
-   remain available unchanged (`client.digitalWrite(pin: 2, …)` and
-   `client.digitalWrite(pin: .pin(2), …)` both work). */
+/* The public pin/channel API — typed ``FirmataPin`` / ``FirmataChannel`` (`.pin(13)` /
+   `.channel(0)`) for call-site clarity and to keep pins distinct from plain numbers. These
+   forward to private bare-`UInt8` implementations. */
 public extension FirmataClient {
     /// Set a pin's mode — `.pin(13)`.
     func setPinMode(_ pin: FirmataPin, mode: PinMode) async throws {
