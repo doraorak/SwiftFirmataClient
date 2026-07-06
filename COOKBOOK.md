@@ -109,7 +109,7 @@ let ver  = try await client.queryProtocolVersion()        // Firmata 2.x
 let fw   = try await client.queryFirmware()               // name + version
 let caps = try await client.queryCapabilities()           // [[PinCapability]] per pin
 let map  = try await client.queryAnalogMapping()          // channel -> pin
-let st   = try await client.queryPinState(pin: 2)         // mode + last written value
+let st   = try await client.queryPinState(pin: .pin(2))         // mode + last written value
 ```
 
 ## 6. I²C

@@ -20,7 +20,7 @@ Both firmwares speak the identical wire protocol; use whichever toolchain you pr
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "14.5.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "15.0.0")
 ```
 
 ## Quick start
@@ -74,8 +74,8 @@ an evicted client receives an `EVICTED` notice and its stream ends.
 - **Tasks**: `uploadTask` plus low-level `createTask` / `addToTask` /
   `scheduleTask` / `deleteTask` / `resetTasks` / `queryAllTasks` / `queryTask`
 
-Typed identity wrappers (`.pin(n)` / `.channel(n)`) are available on the live
-calls too, next to the plain-integer overloads.
+Pins and channels are typed — pass `.pin(n)` / `.channel(n)` (not plain
+integers), so a pin can't be confused with a value.
 
 ## Tasks (the board runs itself)
 
@@ -131,7 +131,7 @@ Module ids are a shared registry across packages — claim the next free id when
 | `queryRegisters`, servo (`configureServo`/`servoWrite`) | ≥ 2.8.0 |
 | `SerialTransport` (Firmata over USB) | ≥ 2.7.0 |
 | Nested tasks (`addTask`/`deleteTask`), task `i2cRead`/`sendString` | ≥ 2.6.0 |
-| Everything else in 14.x | ≥ 2.5.0 |
+| Everything else in 15.x | ≥ 2.5.0 |
 
 ## Testing
 
