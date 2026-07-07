@@ -200,10 +200,13 @@ try await client.uploadTask(id: 1) { board in
 
 ## 11. Registers & operands
 
-The device has 16 global `Int32` registers `R0–R15` (bools are 0/1 in the same
-bank) and 8 floats `F0–F7`. Every value-producing op returns a typed operand you
-can feed to later ops; destinations auto-allocate (R15↓ / F7↓, wrapping) unless
-pinned with `into:`.
+The device has 32 global `Int32` registers (bools are 0/1 in the same bank) and
+16 floats. **R0–R15 / F0–F7 are public** — yours to read, write, and pin.
+**R16–R31 / F8–F15 are internal**: the recorder auto-allocates op results there
+(R31↓ / F15↓, wrapping) and the firmware uses the top of the int bank to track
+HTTP-response staleness, so auto-allocated temporaries never clobber your public
+registers. Every value-producing op returns a typed operand you can feed to later
+ops; destinations auto-allocate unless pinned with `into:`.
 
 ```swift
 try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
@@ -223,7 +226,7 @@ The host reads and writes the same cells live (firmware 2.8+ for the snapshot):
 ```swift
 try await client.setRegister(4, to: 1500)                 // task ifTrue sees it next pass
 try await client.setFloatRegister(0, to: 21.5)
-let snap = try await client.queryRegisters()              // RegisterSnapshot: 16 ints + 8 floats
+let snap = try await client.queryRegisters()              // RegisterSnapshot: the public R0–R15 + F0–F7
 print(snap.ints[4], snap.floats[0])
 ```
 
@@ -248,6 +251,24 @@ let ok = board.compare(light, .greaterOrEqual, .number(100))   // -> TaskBool, r
 
 Comparisons: `.equal .notEqual .lessThan .greaterThan .lessOrEqual .greaterOrEqual`.
 Mixed int/float comparisons promote to float. Branches nest arbitrarily.
+
+### Loops (firmware 2.13+)
+
+`loop(_:gap:)` runs a block exactly N times on the device, pausing `gap` between
+iterations (never after the last) — a native firmware counted loop, not host-side
+unrolling, so the task stays tiny regardless of N.
+
+```swift
+board.loop(5, gap: .milliseconds(200)) {
+    $0.digitalWrite(pin: .pin(2), high: true)
+    $0.delay(.milliseconds(50))
+    $0.digitalWrite(pin: .pin(2), high: false)
+}
+```
+
+Loops nest (up to 4 deep); `count 0` skips the body. This is the reliable way to
+do something *exactly* N times — e.g. wrap a single IR send to press a remote key
+N times (see SwiftFirmataIR).
 
 ## 13. Arithmetic
 

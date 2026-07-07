@@ -84,14 +84,18 @@ the live API, but captured as bytes and executed on-device by the Firmata
 scheduler. Tasks survive disconnects; they live in RAM until deleted or reboot.
 
 On top of standard Firmata scheduling, the firmwares add an extension
-(ext ops `0x10–0x31` under the scheduler SysEx). Everything below records with
+(ext ops `0x10–0x35` under the scheduler SysEx). Everything below records with
 the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
 
-- **Registers**: 16 shared `Int32` registers `R0–R15` (bools are 0/1 in the same
-  bank) + 8 floats `F0–F7`. Value-producing ops auto-allocate, or pin an explicit
-  destination with `into: .reg(n)` — registers are global, so they're also how
-  tasks share state with each other and with the host (`setRegister`).
+- **Registers**: 32 shared `Int32` registers + 16 floats. **R0–R15 / F0–F7 are
+  public** — yours, and how tasks share state with each other and the host
+  (`setRegister`). **R16–R31 / F8–F15 are internal**, where value-producing ops
+  auto-allocate their results so they never clobber your public registers. Pin an
+  explicit public destination with `into: .reg(n)`.
 - **Branches**: `ifTrue(a, .lessThan, b, then: { … }, elseDo: { … })`, nestable.
+- **Loops**: `loop(5, gap: .milliseconds(200)) { … }` runs a block exactly N
+  times on-device (a native counted loop, nests up to 4 deep) — the reliable
+  "do X exactly N times."
 - **Math**: `add/subtract/multiply/divide/modulo` + float variants (`÷0 → 0`).
 - **Reads**: `digitalRead`/`analogRead` into registers; `i2cRead` (register
   pointer + up to 4 bytes, packed big-endian).
@@ -127,6 +131,9 @@ Module ids are a shared registry across packages — claim the next free id when
 
 | Client feature | Needs firmware |
 |---|---|
+| 32 registers (`R16–R31` / `F8–F15`) | ≥ 2.15.0 |
+| IR encode-from-register (`SwiftFirmataIR` `fromRegister:`) | ≥ 2.14.0 |
+| Task `loop()` (native counted loop) | ≥ 2.13.0 |
 | Modules (`queryModules`), IR (`SwiftFirmataIR`) | ≥ 2.9.0 |
 | `queryRegisters`, servo (`configureServo`/`servoWrite`) | ≥ 2.8.0 |
 | `SerialTransport` (Firmata over USB) | ≥ 2.7.0 |
@@ -135,7 +142,7 @@ Module ids are a shared registry across packages — claim the next free id when
 
 ## Testing
 
-`swift test` — 125 tests, no hardware needed (a `MockTransport` plays the board,
+`swift test` — 127 tests, no hardware needed (a `MockTransport` plays the board,
 including the provisioning crypto round-trip). The recorder's byte output is
 golden-tested against captures verified on real hardware.
 

@@ -9,3 +9,6 @@ DerivedData/
 
 # Xcode/SwiftPM local state
 /.swiftpm
+
+# Private implementation-style notes (kept local, not published)
+INTERNALS.md
