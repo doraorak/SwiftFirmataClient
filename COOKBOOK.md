@@ -1,14 +1,11 @@
 # Cookbook
 
-One copy-paste recipe per feature. Everything here compiles against the current
-release and matches firmware 2.7.0 (both firmwares are wire-identical).
-
-Conventions: `client` is a connected `FirmataClient`; inside `uploadTask { board in … }`
-the `board` is a `FirmataTaskRecorder` — calls are recorded, not sent, so they are
-synchronous (no `await`).
+One copy-paste recipe per feature. `client` is a connected `FirmataClient`; inside
+`uploadTask { board in … }` the `board` is a `FirmataTaskRecorder` — its calls are
+recorded, not sent, so they're synchronous (no `await`).
 
 1. [Connecting](#1-connecting)
-2. [Messages & disconnects](#2-messages--disconnects)
+2. [Messages](#2-messages)
 3. [Digital & analog I/O](#3-digital--analog-io)
 4. [Input streams](#4-input-streams)
 5. [Queries](#5-queries)
@@ -19,14 +16,15 @@ synchronous (no `await`).
 10. [Recorder — the basic verbs](#10-recorder--the-basic-verbs)
 11. [Registers & operands](#11-registers--operands)
 12. [Branches](#12-branches)
-13. [Arithmetic](#13-arithmetic)
-14. [On-device reads](#14-on-device-reads)
-15. [Internet & JSON in a task](#15-internet--json-in-a-task)
-16. [Strings](#16-strings)
-17. [Nested tasks](#17-nested-tasks)
-18. [Telemetry](#18-telemetry)
-19. [Custom transports](#19-custom-transports)
-20. [Type reference](#20-type-reference)
+13. [Loops](#13-loops)
+14. [Arithmetic](#14-arithmetic)
+15. [On-device reads](#15-on-device-reads)
+16. [Internet & JSON in a task](#16-internet--json-in-a-task)
+17. [Strings](#17-strings)
+18. [Nested tasks](#18-nested-tasks)
+19. [Telemetry](#19-telemetry)
+20. [Custom transports](#20-custom-transports)
+21. [Type reference](#21-type-reference)
 
 ## 1. Connecting
 
@@ -35,24 +33,23 @@ synchronous (no `await`).
 let client = FirmataClient(transport: BonjourTransport())
 
 // Known address — VPN, tunnel, static IP; no discovery, no Info.plist keys:
-let client = FirmataClient(transport: TCPTransport(host: "192.168.1.87"))       // port 3030
+let client = FirmataClient(transport: TCPTransport(host: "192.168.1.87"))   // port 3030
 
 // BLE (Info.plist: NSBluetoothAlwaysUsageDescription):
 let client = FirmataClient(transport: BLETransport())
 
-// USB serial (macOS; firmware 2.7+). ls /dev/cu.* — use the cu. node.
-// Opening the port auto-resets the board: give it a few seconds to boot.
+// USB serial (macOS). Opening the port resets the board — give it a moment to boot:
 let client = FirmataClient(transport: SerialTransport(path: "/dev/cu.usbserial-0001"))
 
 await client.connect()
 let fw = try await client.queryFirmware()
 ```
 
-The board accepts **one master at a time** — the newest connection wins and the
-old one is evicted. Over serial there is no disconnect event: the port speaks
-Firmata from your first byte until another transport claims the board or it reboots.
+The board serves **one master at a time** — the newest connection wins, the old one
+is evicted. Over serial there's no disconnect event: the port speaks Firmata from
+your first byte until another transport claims the board or it reboots.
 
-## 2. Messages & disconnects
+## 2. Messages
 
 ```swift
 for await message in client.messages {
@@ -71,55 +68,51 @@ for await message in client.messages {
 ```swift
 try await client.setPinMode(.pin(2), mode: .output)        // .input .inputPullup .analog .pwm .servo
 try await client.digitalWrite(pin: .pin(2), high: true)
-try await client.writeDigitalPort(0, pinMask: 0b0000_0100)   // 8 pins at once
+try await client.writeDigitalPort(0, pinMask: 0b0000_0100) // 8 pins at once
 
 try await client.setPinMode(.pin(4), mode: .pwm)
-try await client.analogWrite(channel: .channel(4), value: 128)          // 0–255 duty
-try await client.extendedAnalogWrite(pin: .pin(25), value: 1500)    // pins ≥ 16 / wide values
+try await client.analogWrite(channel: .channel(4), value: 128)     // 0–255 duty
+try await client.extendedAnalogWrite(pin: .pin(25), value: 1500)   // pins ≥ 16 / wide values
 
-let pressed = try await client.digitalRead(pin: .pin(7))            // one-shot, auto-reports
-let light   = try await client.analogRead(channel: .channel(0))         // A0, 0–4095 on ESP32
-
-// Typed spellings exist for every call: .pin(2) / .channel(0).
-try await client.digitalWrite(pin: .pin(2), high: false)
+let pressed = try await client.digitalRead(pin: .pin(7))           // one-shot
+let light   = try await client.analogRead(channel: .channel(0))    // A0, 0–4095 on ESP32
 ```
 
-### Servo (firmware 2.8+)
+### Servo
 
 ```swift
-try await client.setPinMode(.pin(13), mode: .servo)             // default 544–2400 µs range
-try await client.servoWrite(pin: .pin(13), value: 90)           // 0–180 = degrees
+try await client.setPinMode(.pin(13), mode: .servo)                // default 544–2400 µs
+try await client.servoWrite(pin: .pin(13), value: 90)              // 0–180 = degrees
 try await client.configureServo(pin: .pin(13), minPulseMicros: 1000, maxPulseMicros: 2000)
-try await client.servoWrite(pin: .pin(13), value: 1500)         // ≥ 544 = raw pulse µs
-// In a task: board.servoWrite(pin: .pin(13), value: 90) after setPinMode(.servo).
+try await client.servoWrite(pin: .pin(13), value: 1500)            // ≥ 544 = raw pulse µs
 ```
 
 ## 4. Input streams
 
 ```swift
 try await client.setSamplingInterval(.milliseconds(100))
-try await client.reportAnalogChannel(.channel(0), enable: true)     // -> .analog messages
-try await client.reportDigitalPort(0, enable: true)       // -> .digitalPort on change
+try await client.reportAnalogChannel(.channel(0), enable: true)    // -> .analog messages
+try await client.reportDigitalPort(0, enable: true)                // -> .digitalPort on change
 ```
 
 ## 5. Queries
 
 ```swift
-let ver  = try await client.queryProtocolVersion()        // Firmata 2.x
-let fw   = try await client.queryFirmware()               // name + version
-let caps = try await client.queryCapabilities()           // [[PinCapability]] per pin
-let map  = try await client.queryAnalogMapping()          // channel -> pin
-let st   = try await client.queryPinState(pin: .pin(2))         // mode + last written value
+let ver  = try await client.queryProtocolVersion()   // Firmata 2.x
+let fw   = try await client.queryFirmware()           // name + version
+let caps = try await client.queryCapabilities()       // [[PinCapability]] per pin
+let map  = try await client.queryAnalogMapping()      // channel -> pin
+let st   = try await client.queryPinState(pin: .pin(2))
 ```
 
 ## 6. I²C
 
 ```swift
-try await client.configureI2C()                           // begin the bus once
+try await client.configureI2C()                       // begin the bus once
 
 try await client.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
 let reply = try await client.i2cReadOnce(address: 0x48, registerAddress: 0x00, count: 2)
-// reply.data — registerAddress is the peripheral's register pointer, written first.
+// registerAddress is the peripheral's register pointer, written first.
 
 try await client.i2cStartReading(address: 0x48, registerAddress: 0x00, count: 2)
 // -> .i2cReply messages at the sampling interval …
@@ -128,35 +121,35 @@ try await client.i2cStopReading(address: 0x48)
 
 ## 7. Internet requests (live)
 
-The **board's** Wi-Fi performs the request (HTTPS validated against on-device roots);
-you get status + up to ~4 KB of body back.
+The **board's** Wi-Fi performs the request (HTTPS validated on-device); you get the
+status plus up to ~4 KB of body back.
 
 ```swift
 let resp = try await client.httpGet("https://api.example.com/state")
 if resp.isSuccess {
-    let obj = try resp.json()                      // Foundation object graph
-    let typed = try resp.decode(MyModel.self)      // or Codable
+    let obj   = try resp.json()                 // Foundation object graph
+    let typed = try resp.decode(MyModel.self)   // or Codable
 }
 let posted = try await client.httpPost("https://api.example.com/ingest", body: #"{"v":1}"#)
 ```
 
 ## 8. Wi-Fi provisioning
 
-Hand the board its Wi-Fi credentials over **any** transport — an ephemeral
-X25519 handshake derives an AES-256-GCM key, so the password never travels in
-the clear. Creds persist (NVS) and are only saved after a successful join; a
-wrong password rolls back to the previous network.
+Hand the board its credentials over **any** transport — an ephemeral X25519
+handshake derives an AES-256-GCM key, so the password never travels in the clear.
+Creds persist in NVS and are saved only after a successful join; a wrong password
+rolls back to the previous network.
 
 ```swift
 let status = try await client.provisionWiFi(ssid: "MyNetwork", password: "…")
 print(status.connected, status.ip ?? "-")
 
 let now = try await client.queryWiFiStatus()
-try await client.forgetWiFi()                     // fall back to compile-time creds
+try await client.forgetWiFi()                   // fall back to compile-time creds
 ```
 
-BLE and serial survive the network change; a TCP/Bonjour connection drops with
-it (provision over one of the former when actually switching networks).
+BLE and serial survive the network change; a TCP/Bonjour connection drops with it,
+so provision over BLE/serial when actually switching networks.
 
 ## 9. Tasks — upload & manage
 
@@ -170,17 +163,17 @@ try await client.uploadTask(id: 1,
     board.digitalWrite(pin: .pin(2), high: false)
 }
 // uploadTask replaces any task with the same id and round-trips a confirmation,
-// so it's safe to disconnect() immediately after it returns.
+// so it's safe to disconnect() right after it returns.
 
 let ids  = try await client.queryAllTasks()
-let info = try await client.queryTask(id: 1)      // position/length/next run
+let info = try await client.queryTask(id: 1)    // position / length / next run
 try await client.deleteTask(id: 1)
-try await client.resetTasks()                     // delete all
+try await client.resetTasks()                   // delete all
 ```
 
-Limits: 8 task slots, 512 recorded bytes per task, ids 0–127. One-shot tasks
-remove themselves after running; a trailing `delay` makes a task loop (that is
-what `repeatEvery` records for you). Tasks live in RAM — reboot clears them.
+Limits: 8 task slots, 512 recorded bytes per task, ids 0–127. One-shot tasks remove
+themselves; a trailing `delay` makes a task loop (what `repeatEvery` records). Tasks
+live in RAM — reboot clears them.
 
 ## 10. Recorder — the basic verbs
 
@@ -191,22 +184,21 @@ try await client.uploadTask(id: 1) { board in
     board.writeDigitalPort(0, pinMask: 0xFF)
     board.analogWrite(channel: .channel(4), value: 200)
     board.extendedAnalogWrite(pin: .pin(25), value: 1500)
-    board.delay(.milliseconds(1000))              // the board waits here
+    board.delay(.milliseconds(1000))            // the board waits here
 
-    board.configureI2C()                          // I²C from a task (OLED, sensors…)
+    board.configureI2C()                        // I²C from a task (OLED, sensors…)
     board.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
 }
 ```
 
 ## 11. Registers & operands
 
-The device has 32 global `Int32` registers (bools are 0/1 in the same bank) and
-16 floats. **R0–R15 / F0–F7 are public** — yours to read, write, and pin.
-**R16–R31 / F8–F15 are internal**: the recorder auto-allocates op results there
-(R31↓ / F15↓, wrapping) and the firmware uses the top of the int bank to track
-HTTP-response staleness, so auto-allocated temporaries never clobber your public
-registers. Every value-producing op returns a typed operand you can feed to later
-ops; destinations auto-allocate unless pinned with `into:`.
+The device has 32 global `Int32` registers (bools are 0/1 in the same bank) and 16
+floats. **R0–R15 / F0–F7 are public** — yours to read, write, and pin. **R16–R31 /
+F8–F15 are internal**: value-producing ops auto-allocate their results there, so
+temporaries never clobber your public registers. Every value-producing op returns a
+typed operand you can feed to later ops; destinations auto-allocate unless pinned
+with `into:`.
 
 ```swift
 try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
@@ -217,22 +209,22 @@ try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
     board.setFloatRegister(.freg(0), to: .float(21.5))       // F0 = literal
 
     // .reg(n) is also an operand — read state the host or another task wrote:
-    board.ifTrue(.reg(4), .greaterThan, light, then: { $0.digitalWrite(pin: .pin(2), high: true) })
+    board.ifTrue(.reg(4), .greaterThan, light) { $0.digitalWrite(pin: .pin(2), high: true) }
 }
 ```
 
-The host reads and writes the same cells live (firmware 2.8+ for the snapshot):
+The host reads and writes the same public cells live:
 
 ```swift
 try await client.setRegister(4, to: 1500)                 // task ifTrue sees it next pass
 try await client.setFloatRegister(0, to: 21.5)
-let snap = try await client.queryRegisters()              // RegisterSnapshot: the public R0–R15 + F0–F7
+let snap = try await client.queryRegisters()              // RegisterSnapshot: R0–R15 + F0–F7
 print(snap.ints[4], snap.floats[0])
 ```
 
-Pin a register when the value must outlive auto-allocation wraparound or be
-visible to the host / another task. Operand literals: `.number(_)`, `.float(_)`,
-`.bool(_)`; registers: `.reg(_)`, `.freg(_)`, `.boolReg(_)`.
+Pin a public register when the value must be visible to the host or another task.
+Operand literals: `.number(_)`, `.float(_)`, `.bool(_)`; registers: `.reg(_)`,
+`.freg(_)`, `.boolReg(_)`.
 
 ## 12. Branches
 
@@ -252,11 +244,11 @@ let ok = board.compare(light, .greaterOrEqual, .number(100))   // -> TaskBool, r
 Comparisons: `.equal .notEqual .lessThan .greaterThan .lessOrEqual .greaterOrEqual`.
 Mixed int/float comparisons promote to float. Branches nest arbitrarily.
 
-### Loops (firmware 2.13+)
+## 13. Loops
 
 `loop(_:gap:)` runs a block exactly N times on the device, pausing `gap` between
-iterations (never after the last) — a native firmware counted loop, not host-side
-unrolling, so the task stays tiny regardless of N.
+iterations (never after the last) — a native counted loop, not host-side unrolling,
+so the task stays tiny regardless of N.
 
 ```swift
 board.loop(5, gap: .milliseconds(200)) {
@@ -266,11 +258,11 @@ board.loop(5, gap: .milliseconds(200)) {
 }
 ```
 
-Loops nest (up to 4 deep); `count 0` skips the body. This is the reliable way to
-do something *exactly* N times — e.g. wrap a single IR send to press a remote key
-N times (see SwiftFirmataIR).
+Loops nest up to 4 deep; `count 0` skips the body. This is the reliable way to do
+something *exactly* N times — e.g. wrap a single IR send to press a remote key N
+times (see [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR)).
 
-## 13. Arithmetic
+## 14. Arithmetic
 
 ```swift
 let sum = board.add(light, .number(100))           // subtract / multiply / divide / modulo
@@ -278,29 +270,29 @@ let pct = board.divide(sum, .number(41))           // integer; ÷0 and %0 yield 
 let f   = board.multiplyFloat(.freg(0), .float(1.8))   // + addFloat/subtractFloat/divideFloat
 ```
 
-## 14. On-device reads
+## 15. On-device reads
 
 ```swift
-let btn  = board.digitalRead(pin: .pin(7))                  // TaskBool
-let a0   = board.analogRead(channel: .channel(0))           // TaskNumber
+let btn  = board.digitalRead(pin: .pin(7))                 // TaskBool
+let a0   = board.analogRead(channel: .channel(0))          // TaskNumber
 let temp = board.i2cRead(address: 0x48, registerAddress: 0x00, count: 2)
 // i2cRead writes the register pointer, reads 1–4 bytes, packs them big-endian.
 ```
 
-## 15. Internet & JSON in a task
+## 16. Internet & JSON in a task
 
 ```swift
 try await client.uploadTask(id: 2, repeatEvery: .seconds(60)) { board in
     let resp = board.httpGet("https://api.example.com/state")   // TaskHTTPResponse
 
     board.ifTrue(resp.status, .equal, .number(200), then: {
-        let level = $0.json.getNumber(resp.body, "sensor.level")            // Int32, truncated
-        let volts = $0.json.getFloat(resp.body, "sensor.volts")             // TaskFloat
-        let n     = $0.json.getSize(resp.body, "readings")                  // array/object size
-        let has   = $0.json.bodyContains(resp.body, "alarm")                // TaskBool
+        let level = $0.json.getNumber(resp.body, "sensor.level")   // Int32, truncated
+        let volts = $0.json.getFloat(resp.body, "sensor.volts")    // TaskFloat
+        let n     = $0.json.getSize(resp.body, "readings")         // array/object size
+        let has   = $0.json.bodyContains(resp.body, "alarm")       // TaskBool
 
         let kind = $0.json.getType(resp.body, "result")
-        $0.ifTrue(kind, is: .string) { $0.sendString("string result") }     // typed check
+        $0.ifTrue(kind, is: .string) { $0.sendString("string result") }
 
         $0.ifTrue(level, .greaterThan, .number(80)) { $0.digitalWrite(pin: .pin(2), high: true) }
     })
@@ -320,10 +312,10 @@ board.json.free(resp.body)                         // release the slot
 ```
 
 The snapshot pool has 12 slots: 2 for JSON bodies, 10 for strings. Slots
-auto-allocate and wrap; pin one with `into: TaskJSONSlot(0…1)` / `TaskStringSlot(0…9)`
-to share it across tasks or protect it from wraparound.
+auto-allocate and wrap; pin one with `into: TaskJSONSlot(0…1)` /
+`TaskStringSlot(0…9)` to share it across tasks or protect it from wraparound.
 
-## 16. Strings
+## 17. Strings
 
 `json.getString` captures a JSON string's (unquoted) content into a string slot;
 `string.createString` loads a literal. Both return a `TaskString` handle:
@@ -340,11 +332,11 @@ let num  = board.string.toInt(name)                         // clamped Int32
 board.string.free(tag)                                      // release the slot
 ```
 
-## 17. Nested tasks
+## 18. Nested tasks
 
-A task can upload and schedule **another task** — no host involved. Each
-execution replaces the child (delete → create → fill → schedule), so a
-repeating parent restarts its child every period.
+A task can upload and schedule **another task** — no host involved. Each execution
+replaces the child (delete → create → fill → schedule), so a repeating parent
+restarts its child every period.
 
 ```swift
 try await client.uploadTask(id: 1, repeatEvery: .seconds(60)) { board in
@@ -361,20 +353,19 @@ try await client.uploadTask(id: 1, repeatEvery: .seconds(60)) { board in
 }
 ```
 
-Rules: registers/slots are global across tasks (pin registers to pass values);
-the child counts against the parent's 512-byte budget too (~8/7 encoded); never
-reuse the enclosing task's own id — the firmware refuses the slot.
+Registers/slots are global across tasks (pin registers to pass values in); the child
+counts against the parent's 512-byte budget; never reuse the enclosing task's own id.
 
-## 18. Telemetry
+## 19. Telemetry
 
 ```swift
 board.sendString("threshold crossed")              // -> .stringData on client.messages
 let (free, largest) = board.heapStats()            // TaskNumbers: heap bytes
 ```
 
-## 19. Custom transports
+## 20. Custom transports
 
-`FirmataTransport` has two requirements. Anything that moves bytes qualifies:
+`FirmataTransport` has two requirements — anything that moves bytes qualifies:
 
 ```swift
 final class MyTransport: FirmataTransport {
@@ -387,17 +378,16 @@ final class MyTransport: FirmataTransport {
 }
 ```
 
-The four shipped transports (`BonjourTransport`, `TCPTransport`, `BLETransport`,
-`SerialTransport`) are ordinary conformances — read their sources as templates.
+The four shipped transports are ordinary conformances — read their sources as templates.
 
-## 20. Type reference
+## 21. Type reference
 
 | Type | What it is |
 |---|---|
 | `TaskOperand` | Anything an op accepts: literal or register |
 | `TaskNumber` / `TaskFloat` / `TaskBool` | Typed operand protocols returned by ops |
-| `TaskNumberRegister` `.reg(0–15)` | An `Int32` register (also `TaskBoolRegister` `.boolReg`, same bank) |
-| `TaskFloatRegister` `.freg(0–7)` | A float register |
+| `TaskNumberRegister` `.reg(0–31)` | An `Int32` register (public 0–15); also `TaskBoolRegister` `.boolReg`, same bank |
+| `TaskFloatRegister` `.freg(0–15)` | A float register (public 0–7) |
 | `TaskNumberLiteral` `.number(_)` etc. | Compile-time constants |
 | `TaskPin` `.pin(0–127)` / `TaskChannel` `.channel(0–15)` | Typed pin/channel identities (recorder) |
 | `FirmataPin` / `FirmataChannel` | The same, for the live client |

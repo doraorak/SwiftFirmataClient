@@ -4,24 +4,27 @@ A concurrency-safe Swift client for the Firmata protocol. Drive an ESP32 (or any
 Firmata board) from macOS/iOS over Wi-Fi, BLE, TCP, or USB serial — and record
 **tasks** that keep running on the board after you disconnect.
 
-The client is an `actor`; every call is `async`, and board→host traffic arrives
-on one `AsyncStream`.
+The client is an `actor`: every call is `async`, and all board→host traffic
+arrives on one `messages` `AsyncStream`.
 
-## The project suite
+## The suite
 
 | Repo | Role |
 |---|---|
 | [SwiftFirmataClient](https://github.com/doraorak/SwiftFirmataClient) | This package — the host-side client (macOS 13+ / iOS 16+, Swift 6) |
-| [ESP32FirmataSwift](https://github.com/doraorak/ESP32FirmataSwift) | ESP32 firmware in Embedded Swift (ESP-IDF, Xtensa) |
-| [ESP32Firmata](https://github.com/doraorak/ESP32Firmata) | The same firmware in C++ (Arduino IDE / arduino-cli) |
+| [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) | Optional IR (infrared) add-on package |
+| [ESP32FirmataSwift](https://github.com/doraorak/ESP32FirmataSwift) | ESP32 firmware in Embedded Swift (ESP-IDF) |
+| [ESP32Firmata](https://github.com/doraorak/ESP32Firmata) | The same firmware in C++ (Arduino) |
 
-Both firmwares speak the identical wire protocol; use whichever toolchain you prefer.
+Both firmwares speak the identical wire protocol — use whichever toolchain you prefer.
 
 ## Install
 
 ```swift
 .package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "15.1.0")
 ```
+
+Pair with firmware **2.15+**.
 
 ## Quick start
 
@@ -32,7 +35,7 @@ let client = FirmataClient(transport: BonjourTransport())   // finds the board v
 await client.connect()
 
 try await client.setPinMode(.pin(2), mode: .output)
-try await client.digitalWrite(pin: .pin(2), high: true)           // LED on
+try await client.digitalWrite(pin: .pin(2), high: true)     // LED on
 
 // A task the board runs by itself — forever, even with nobody connected:
 try await client.uploadTask(id: 1, repeatEvery: .milliseconds(500)) { board in
@@ -48,102 +51,80 @@ await client.disconnect()                                   // it keeps blinking
 | Transport | When to use it |
 |---|---|
 | `BonjourTransport()` | Same LAN — discovers `_firmata._tcp` via mDNS. Needs `NSLocalNetworkUsageDescription` + `NSBonjourServices` in Info.plist. |
-| `TCPTransport(host:port:)` | Known address — static IP, another subnet, VPN/Tailscale, SSH tunnel. No discovery, no Info.plist keys. |
+| `TCPTransport(host:port:)` | Known address — static IP, another subnet, VPN, SSH tunnel. No discovery, no Info.plist keys. |
 | `BLETransport()` | No network — Nordic UART Service. Needs `NSBluetoothAlwaysUsageDescription`. |
-| `SerialTransport(path:)` | USB cable (macOS only; firmware 2.7+). The flashing/console port; opening it auto-resets the board, so allow a few seconds before the first query. |
+| `SerialTransport(path:)` | USB cable (macOS). The console port; opening it resets the board, so allow a moment before the first query. |
 
 `FirmataTransport` is a two-requirement protocol (`send` + `openStream`) — implement
-it to bring your own link. The board accepts one master at a time, latest wins;
-an evicted client receives an `EVICTED` notice and its stream ends.
+it to bring your own link. The board serves one master at a time, latest wins; an
+evicted client receives an `EVICTED` notice and its stream ends.
 
-## Live API (host drives the board)
+## Live API — the host drives the board
 
 - **Pins**: `setPinMode`, `digitalWrite`, `writeDigitalPort`, `analogWrite`,
   `extendedAnalogWrite`, `digitalRead`, `analogRead`
-- **Streams**: `reportDigitalPort` / `reportAnalogChannel` + the `messages`
-  stream; `setSamplingInterval`
+- **Servo**: `configureServo` (pulse range), `servoWrite` (0–180° or raw µs)
+- **Streams**: `reportDigitalPort` / `reportAnalogChannel` + the `messages` stream;
+  `setSamplingInterval`
 - **Queries**: `queryFirmware`, `queryProtocolVersion`, `queryCapabilities`,
-  `queryAnalogMapping`, `queryPinState`
+  `queryAnalogMapping`, `queryPinState`, `queryModules`
 - **I²C**: `configureI2C`, `i2cWrite`, `i2cReadOnce`, `i2cStartReading` / `i2cStopReading`
 - **Internet** (the board's Wi-Fi makes the request): `httpGet`, `httpPost`
-- **Servo**: `configureServo` (pulse range), `servoWrite` (0–180° or raw µs) — live and in tasks
 - **Registers** (shared state with tasks): `setRegister`, `setFloatRegister`,
-  `queryRegisters` → all of R0–R15 + F0–F7 in one snapshot
-- **Wi-Fi provisioning** (encrypted X25519 + AES-GCM; works over any transport):
+  `queryRegisters`
+- **Wi-Fi provisioning** (encrypted X25519 + AES-GCM, over any transport):
   `provisionWiFi`, `queryWiFiStatus`, `forgetWiFi`
-- **Tasks**: `uploadTask` plus low-level `createTask` / `addToTask` /
-  `scheduleTask` / `deleteTask` / `resetTasks` / `queryAllTasks` / `queryTask`
+- **Tasks**: `uploadTask`, plus low-level `createTask` / `addToTask` / `scheduleTask`
+  / `deleteTask` / `resetTasks` / `queryAllTasks` / `queryTask`
 
-Pins and channels are typed — pass `.pin(n)` / `.channel(n)` (not plain
-integers), so a pin can't be confused with a value.
+Pins and channels are typed — pass `.pin(n)` / `.channel(n)`, never a bare integer.
 
-## Tasks (the board runs itself)
+## Tasks — the board runs itself
 
-`uploadTask { board in … }` hands you a `FirmataTaskRecorder`: the same verbs as
-the live API, but captured as bytes and executed on-device by the Firmata
-scheduler. Tasks survive disconnects; they live in RAM until deleted or reboot.
+`uploadTask { board in … }` hands you a `FirmataTaskRecorder` with the same verbs as
+the live API, captured as bytes and executed on-device by the scheduler. Tasks
+survive disconnects and live in RAM until deleted or reboot. Every recipe is in the
+[COOKBOOK](COOKBOOK.md); the feature set:
 
-On top of standard Firmata scheduling, the firmwares add an extension
-(ext ops `0x10–0x35` under the scheduler SysEx). Everything below records with
-the same closure style — the [COOKBOOK](COOKBOOK.md) has a recipe per feature:
-
-- **Registers**: 32 shared `Int32` registers + 16 floats. **R0–R15 / F0–F7 are
-  public** — yours, and how tasks share state with each other and the host
-  (`setRegister`). **R16–R31 / F8–F15 are internal**, where value-producing ops
+- **Registers** — 32 shared `Int32` registers + 16 floats. `R0–R15` / `F0–F7` are
+  **public** (yours, and how tasks share state with each other and the host via
+  `setRegister`); `R16–R31` / `F8–F15` are **internal**, where value-producing ops
   auto-allocate their results so they never clobber your public registers. Pin an
   explicit public destination with `into: .reg(n)`.
-- **Branches**: `ifTrue(a, .lessThan, b, then: { … }, elseDo: { … })`, nestable.
-- **Loops**: `loop(5, gap: .milliseconds(200)) { … }` runs a block exactly N
-  times on-device (a native counted loop, nests up to 4 deep) — the reliable
-  "do X exactly N times."
-- **Math**: `add/subtract/multiply/divide/modulo` + float variants (`÷0 → 0`).
-- **Reads**: `digitalRead`/`analogRead` into registers; `i2cRead` (register
-  pointer + up to 4 bytes, packed big-endian).
-- **Internet + JSON**: `httpGet`/`httpPost` from the task; inspect the response
+- **Branches** — `ifTrue(a, .lessThan, b, then: { … }, elseDo: { … })`, nestable.
+- **Loops** — `loop(5, gap: .milliseconds(200)) { … }` runs a block exactly N times
+  on-device (a native counted loop, nestable up to 4 deep).
+- **Math** — `add` / `subtract` / `multiply` / `divide` / `modulo` + float variants
+  (`÷0 → 0`).
+- **Reads** — `digitalRead` / `analogRead`; `i2cRead` (register pointer + up to 4
+  bytes, packed big-endian).
+- **Internet + JSON** — `httpGet` / `httpPost` from the task, then inspect the body
   with `json.getNumber/getFloat/getString/getSize/getType/bodyContains`;
-  `snapshot`/`free` persist a body across requests (12-slot pool: 2 JSON + 10 string).
-- **Strings**: `string.createString/length/equals/contains/indexOf/toInt/free`.
-- **Nested tasks**: `board.addTask(id:…) { child in … }` — a task uploads and
-  schedules *another* task with no host involved; `board.deleteTask(id:)` stops
-  one. Never reuse the enclosing task's own id.
-- **Telemetry**: `sendString` (task → host), `heapStats`.
+  `snapshot` / `free` retain a body across later requests.
+- **Strings** — `string.createString/length/equals/contains/indexOf/toInt/free`.
+- **Nested tasks** — `addTask(id:) { child in … }` uploads and schedules another task
+  with no host involved; `deleteTask(id:)` stops one.
+- **Telemetry** — `sendString` (task → host), `heapStats`.
 
 ## Modules
 
-Optional hardware subsystems sit behind two generic primitives — `queryModules()`
-(discover what the connected firmware actually has) and `sendToModule(id:payload:)` /
-`FirmataTaskRecorder.moduleOp(id:payload:)`. Each module ships as its **own package that
-depends on this one**, adding typed `FirmataClient` / recorder extensions — import only
-the ones you need.
+Optional hardware subsystems sit behind two generic primitives — `queryModules()` to
+discover what the connected firmware has, and `sendToModule(id:payload:)` /
+`FirmataTaskRecorder.moduleOp(id:payload:)` to talk to one. Each module ships as its
+own package that depends on this one, adding typed extensions — import only what you need.
 
 ```swift
 guard try await board.queryModules().contains(where: { $0.name == "ir" }) else { return }
-// (each module package also ships a typed check, e.g. SwiftFirmataIR's `board.hasIRModule()`)
 ```
 
-| ID | Module | Ver | Purpose | Package |
-|----|--------|-----|---------|---------|
-| `0x01` | `ir` | 1.0 | Infrared NEC/RC6 transmit + NEC receive (RMT) | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) |
-
-Module ids are a shared registry across packages — claim the next free id when adding one.
-
-## Firmware compatibility
-
-| Client feature | Needs firmware |
-|---|---|
-| 32 registers (`R16–R31` / `F8–F15`) | ≥ 2.15.0 |
-| IR encode-from-register (`SwiftFirmataIR` `fromRegister:`) | ≥ 2.14.0 |
-| Task `loop()` (native counted loop) | ≥ 2.13.0 |
-| Modules (`queryModules`), IR (`SwiftFirmataIR`) | ≥ 2.9.0 |
-| `queryRegisters`, servo (`configureServo`/`servoWrite`) | ≥ 2.8.0 |
-| `SerialTransport` (Firmata over USB) | ≥ 2.7.0 |
-| Nested tasks (`addTask`/`deleteTask`), task `i2cRead`/`sendString` | ≥ 2.6.0 |
-| Everything else in 15.x | ≥ 2.5.0 |
+| ID | Module | Purpose | Package |
+|----|--------|---------|---------|
+| `0x01` | `ir` | Infrared NEC/RC6 transmit + NEC receive | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) |
 
 ## Testing
 
-`swift test` — 127 tests, no hardware needed (a `MockTransport` plays the board,
-including the provisioning crypto round-trip). The recorder's byte output is
+`swift test` — 127 tests, no hardware needed: a `MockTransport` plays the board
+(including the provisioning-crypto round-trip), and the recorder's byte output is
 golden-tested against captures verified on real hardware.
 
 ## License
