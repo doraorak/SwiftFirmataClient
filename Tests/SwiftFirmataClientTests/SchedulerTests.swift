@@ -269,7 +269,7 @@ struct SchedulerTests {
         }
         _ = r.analogRead(channel: .channel(2))           // resumes past the child -> R13
 
-        // Parent-level analog reads landed in R15 then R13 (R14 went to the child).
+        // Parent-level analog reads landed in R31 then R29 (R30 went to the child; internal R31↓).
         let b = r.bytes
         func hasAnalogRead(reg: UInt8, ch: UInt8) -> Bool {
             let msg: [UInt8] = [0xF0, 0x7B, 0x7F, 0x12, reg, ch, 0xF7]
@@ -280,8 +280,8 @@ struct SchedulerTests {
             }
             return false
         }
-        #expect(hasAnalogRead(reg: 15, ch: 0))
-        #expect(hasAnalogRead(reg: 13, ch: 2))
+        #expect(hasAnalogRead(reg: 31, ch: 0))
+        #expect(hasAnalogRead(reg: 29, ch: 2))
     }
 
     @Test func recorderDeleteTask() {

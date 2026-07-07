@@ -167,4 +167,13 @@ internal enum Sched {
     internal static let extRegQuery:    UInt8 = 0x31  // report all registers to the host (regReply)
     internal static let extWritePin:    UInt8 = 0x32  // write a pin from an operand: kind pin <operand>
     internal static let extModuleOp:    UInt8 = 0x33  // deliver a payload to a module from a task
+    internal static let extLoop:        UInt8 = 0x34  // begin a counted loop: count gap skip (skip past body when count==0)
+    internal static let extLoopEnd:     UInt8 = 0x35  // end of a counted loop: decrement, jump back + gap, or exit
+
+    // Task-extension register file. R0-15 / F0-7 are public (user); R16-31 / F8-15 are internal
+    // (auto-allocation + library scratch). The wire index masks derive from the counts.
+    internal static let intRegisterCount:   UInt8 = 32
+    internal static let floatRegisterCount: UInt8 = 16
+    internal static let intRegisterMask:    UInt8 = intRegisterCount - 1     // 0x1F
+    internal static let floatRegisterMask:  UInt8 = floatRegisterCount - 1   // 0x0F
 }

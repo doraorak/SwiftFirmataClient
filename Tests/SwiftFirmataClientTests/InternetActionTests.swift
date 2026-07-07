@@ -11,8 +11,8 @@ struct InternetActionTests {
 
     // MARK: - Recorder HTTP encoding (status-only; no value register)
 
-    // httpGet/httpPost also emit a BODY_GEN op (capture generation -> gen reg R0, bottom-up).
-    private let bodyGen0: [UInt8] = [0xF0, 0x7B, 0x7F, 0x22, 0, 0xF7]
+    // httpGet/httpPost also emit a BODY_GEN op (capture generation -> internal gen reg R16, R16↑).
+    private let bodyGen0: [UInt8] = [0xF0, 0x7B, 0x7F, 0x22, 16, 0xF7]
 
     @Test func httpGetEncoding() {
         var r = FirmataTaskRecorder()
@@ -103,10 +103,10 @@ struct InternetActionTests {
 
     @Test func arithAutoAllocatesDescending() {
         var r = FirmataTaskRecorder()
-        let a = r.add(.reg(0), .reg(1))        // -> R15
-        let b = r.multiply(.reg(0), .reg(1))   // -> R14
-        #expect(a.index == 15)
-        #expect(b.index == 14)
+        let a = r.add(.reg(0), .reg(1))        // -> R31 (internal auto, R31↓)
+        let b = r.multiply(.reg(0), .reg(1))   // -> R30
+        #expect(a.index == 31)
+        #expect(b.index == 30)
     }
 
     // MARK: - Float registers / arithmetic / jsonFloat
@@ -141,10 +141,10 @@ struct InternetActionTests {
             #expect(r.bytes == [0xF0, 0x7B, 0x7F, 0x1C, subop, 0x02, 2, 0x00, 2, 0x01, 0xF7])
         }
         var r = FirmataTaskRecorder()
-        let a = r.addFloat(.freg(0), .freg(1))       // -> F7
-        let b = r.multiplyFloat(.freg(0), .freg(1))  // -> F6
-        #expect(a.index == 7)
-        #expect(b.index == 6)
+        let a = r.addFloat(.freg(0), .freg(1))       // -> F15 (internal auto, F15↓)
+        let b = r.multiplyFloat(.freg(0), .freg(1))  // -> F14
+        #expect(a.index == 15)
+        #expect(b.index == 14)
     }
 
     @Test func jsonFloatEncoding() {
@@ -225,10 +225,10 @@ struct InternetActionTests {
 
     @Test func httpGetReturnsHandleAutoAllocatingStatus() {
         var r = FirmataTaskRecorder()
-        let a = r.httpGet("http://x")          // status auto -> R15
-        let b = r.httpGet("http://x")          // status auto -> R14
-        #expect(a.status.index == 15)
-        #expect(b.status.index == 14)
+        let a = r.httpGet("http://x")          // status auto -> R31
+        let b = r.httpGet("http://x")          // status auto -> R30
+        #expect(a.status.index == 31)
+        #expect(b.status.index == 30)
         // explicit statusInto still works and is reflected in the handle
         var r2 = FirmataTaskRecorder()
         let c = r2.httpGet("http://x", statusInto: .reg(3))
@@ -254,12 +254,12 @@ struct InternetActionTests {
 
     @Test func isValidEmitsRequestCountThenCompare() {
         let r = FirmataTaskRecorder()
-        let resp = r.httpGet("http://x")     // status R15, gen R0
-        let fresh = resp.body.isValid()      // R14 = requestCount; R13 = (R0 == R14)
-        #expect(fresh.index == 13)
+        let resp = r.httpGet("http://x")     // status R31, gen R16
+        let fresh = resp.body.isValid()      // R30 = requestCount; R29 = (R16 == R30)
+        #expect(fresh.index == 29)
         let tail: [UInt8] =
-            [0xF0, 0x7B, 0x7F, 0x22, 14, 0xF7] +                            // REQUEST_COUNT -> R14
-            [0xF0, 0x7B, 0x7F, 0x27, 0x00, 13, 0x00, 0x00, 0x00, 14, 0xF7]  // CMP equal R13 = (R0 == R14)
+            [0xF0, 0x7B, 0x7F, 0x22, 30, 0xF7] +                            // REQUEST_COUNT -> R30
+            [0xF0, 0x7B, 0x7F, 0x27, 0x00, 29, 0x00, 16, 0x00, 30, 0xF7]    // CMP equal R29 = (R16 == R30)
         #expect(Array(r.bytes.suffix(tail.count)) == tail)
     }
 
@@ -275,11 +275,11 @@ struct InternetActionTests {
 
     @Test func jsonNamespaceSelectsLiveThenInspects() {
         let r = FirmataTaskRecorder()
-        let h = r.httpGet("http://x")                 // borrowed; generation captured in R0
+        let h = r.httpGet("http://x")                 // borrowed; generation captured in R16
         let v = r.json.getNumber(h.body, "id", into: .reg(7), found: .reg(8))
         #expect(v.index == 7)
         let tail: [UInt8] =
-            [0xF0, 0x7B, 0x7F, 0x24, 0x00, 0x00, 0xF7] +              // SELECT live, gen R0
+            [0xF0, 0x7B, 0x7F, 0x24, 0x00, 16, 0xF7] +               // SELECT live, gen R16
             [0xF0, 0x7B, 0x7F, 0x16, 7, 8, 0, 0x02, 0x00, 105, 100, 0xF7]  // JSON_NUM "id" -> R7
         #expect(Array(r.bytes.suffix(tail.count)) == tail)
     }
@@ -301,12 +301,12 @@ struct InternetActionTests {
     @Test func jsonNumberFlowsIntoIfTrue() {
         let r = FirmataTaskRecorder()
         let h = r.httpGet("http://x", statusInto: .reg(0))
-        let pct = r.json.getNumber(h.body, "changePercent", scaledBy: 2)   // dst=15, found=14
-        #expect(pct.index == 15)
+        let pct = r.json.getNumber(h.body, "changePercent", scaledBy: 2)   // dst=31, found=30
+        #expect(pct.index == 31)
         r.ifTrue(pct, .greaterThan, .number(0)) { $0.digitalWrite(pin: .pin(2), high: true) }
-        // The next auto-allocated read should be R13 (15 and 14 already taken).
+        // The next auto-allocated read should be R29 (31 and 30 already taken).
         let nxt = r.json.bodyContains(h.body, "x")
-        #expect(nxt.index == 13)
+        #expect(nxt.index == 29)
     }
 
     // MARK: - Parser: HTTP_REPLY -> .httpResponse

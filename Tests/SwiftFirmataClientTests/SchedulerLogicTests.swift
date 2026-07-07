@@ -59,6 +59,62 @@ struct SchedulerLogicTests {
         ])
     }
 
+    @Test func loopOpEncodesBeginBodyEnd() {
+        var r = FirmataTaskRecorder()
+        r.loop(3, gap: .milliseconds(200)) { $0.digitalWrite(pin: .pin(5), high: true) }
+        // LOOP_BEGIN(count=3, gap=200 -> 72|1<<7, skip=8 = body(3) + LOOP_END(5)); body; LOOP_END
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x34, 0x03, 0x00, 72, 0x01, 0x08, 0x00, 0xF7, // EXT LOOP
+            0xF5, 0x05, 0x01,                                              // body: digitalWrite(5, HIGH)
+            0xF0, 0x7B, 0x7F, 0x35, 0xF7,                                  // EXT LOOP_END
+        ])
+    }
+
+    // Host-side simulation of the firmware scheduler's execute()+loopBegin/loopEnd over the real
+    // recorder byte stream — proves the body fires exactly N times (incl. nesting / count 0), no board.
+    @Test func loopVMFiresBodyExactlyNTimes() {
+        func fires(_ count: Int, nested inner: Int? = nil) -> Int {
+            var r = FirmataTaskRecorder()
+            r.loop(count, gap: .milliseconds(10)) { o in
+                if let inner { o.loop(inner, gap: .milliseconds(10)) { $0.digitalWrite(pin: .pin(5), high: true) } }
+                else { o.digitalWrite(pin: .pin(5), high: true) }
+            }
+            return simulateLoop(r.bytes)
+        }
+        #expect(fires(4) == 4)
+        #expect(fires(1) == 1)
+        #expect(fires(0) == 0)
+        #expect(fires(3, nested: 2) == 6)   // nested loops multiply
+    }
+
+    /// Faithful port of the firmware VM: walks the byte stream with a program counter and a loop
+    /// stack; returns how many times the body message (digitalWrite, 0xF5) ran.
+    private func simulateLoop(_ bytes: [UInt8]) -> Int {
+        var pos = 0, fired = 0, steps = 0
+        var remaining: [Int] = [], resume: [Int] = []
+        while pos < bytes.count {
+            steps += 1; if steps > 100_000 { break }                 // runaway guard
+            if bytes[pos] == 0xF0 {                                   // SysEx frame F0…F7
+                let end = bytes[pos...].firstIndex(of: 0xF7)!
+                let f = Array(bytes[pos...end]); pos = end + 1
+                if f.count >= 4, f[1] == 0x7B, f[2] == 0x7F, f[3] == 0x34 {        // LOOP_BEGIN
+                    let count = Int(f[4]) | (Int(f[5]) << 7)
+                    let skip  = Int(f[8]) | (Int(f[9]) << 7)
+                    if count == 0 { pos += skip } else { remaining.append(count); resume.append(pos) }
+                } else if f.count >= 4, f[1] == 0x7B, f[2] == 0x7F, f[3] == 0x35 { // LOOP_END
+                    if !remaining.isEmpty {
+                        remaining[remaining.count - 1] -= 1
+                        if remaining.last! > 0 { pos = resume.last! }
+                        else { remaining.removeLast(); resume.removeLast() }
+                    }
+                }                                                     // DELAY / other sysex: transparent
+            } else if bytes[pos] == 0xF5 {                            // digitalWrite body (3 bytes)
+                fired += 1; pos += 3
+            } else { pos += 1 }
+        }
+        return fired
+    }
+
     @Test func compareEncodesOpDstThenOperands() {
         var r = FirmataTaskRecorder()
         let isUp = r.compare(.reg(0), .greaterThan, .number(0), into: .boolReg(5))
@@ -108,15 +164,15 @@ struct SchedulerLogicTests {
     // whatever the branch allocated.
     @Test func nestedBranchAllocationDoesNotClobberOuter() {
         let r = FirmataTaskRecorder()
-        let outer = r.analogRead(channel: .channel(0))            // -> R15
+        let outer = r.analogRead(channel: .channel(0))            // -> R31 (internal auto, R31↓)
         var inner: (any TaskNumber)?
         r.ifTrue(outer, .greaterThan, .number(100)) {
-            inner = $0.analogRead(channel: .channel(1))           // continues the cursor; must not reuse R15
+            inner = $0.analogRead(channel: .channel(1))           // continues the cursor; must not reuse R31
         }
         let after = r.analogRead(channel: .channel(2))            // resumes past the branch's allocation
-        #expect((outer as? any TaskRegister)?.index == 15)
-        #expect((inner as? any TaskRegister)?.index == 14)        // distinct from outer (was 15 before the fix)
-        #expect((after as? any TaskRegister)?.index == 13)
+        #expect((outer as? any TaskRegister)?.index == 31)
+        #expect((inner as? any TaskRegister)?.index == 30)        // distinct from outer
+        #expect((after as? any TaskRegister)?.index == 29)
     }
 }
 
@@ -150,8 +206,8 @@ struct LiveRegistersServoTests {
         let (c, t) = await makeClient()
         async let snap = c.queryRegisters()
         await Task.yield()
-        var ints = [Int32](repeating: 0, count: 16); ints[3] = 1500; ints[15] = -7
-        var floats = [Float](repeating: 0, count: 8); floats[2] = 3.5
+        var ints = [Int32](repeating: 0, count: 32); ints[3] = 1500; ints[15] = -7   // 32 int + 16 float wire layout
+        var floats = [Float](repeating: 0, count: 16); floats[2] = 3.5
         var frame: [UInt8] = [0xF0, 0x7B, 0x0C]
         for v in ints   { frame += limbs(UInt32(bitPattern: v)) }
         for v in floats { frame += limbs(v.bitPattern) }
@@ -203,9 +259,9 @@ struct OperandWriteTests {
 
     @Test func operandWriteFromTaskVariable() {
         let r = FirmataTaskRecorder()
-        let light = r.analogRead(channel: .channel(0))     // auto -> R15
+        let light = r.analogRead(channel: .channel(0))     // auto -> R31
         r.analogWrite(pin: .pin(4), value: light)          // PWM follows the reading
-        #expect(Array(r.bytes.suffix(9)) == [0xF0, 0x7B, 0x7F, 0x32, 1, 4, 0x00, 15, 0xF7])
+        #expect(Array(r.bytes.suffix(9)) == [0xF0, 0x7B, 0x7F, 0x32, 1, 4, 0x00, 31, 0xF7])
     }
 }
 

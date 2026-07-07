@@ -959,7 +959,7 @@ public actor FirmataClient {
        - startDelay: Delay before the first run (`.zero` = next scheduler pass).
        - repeatEvery: Loop period (a trailing scheduler delay); `nil` = one-shot,
          removed after it runs.
-       - build: Records the steps into the provided ``FirmataTaskRecorder``.
+       - build: Records the actions into the provided ``FirmataTaskRecorder``.
      - Throws: A transport error, or ``FirmataError/transportClosed`` if the link drops.
      */
     public func uploadTask(
