@@ -16,7 +16,7 @@ recorded, not sent, so they're synchronous (no `await`).
 10. [Recorder — the basic verbs](#10-recorder--the-basic-verbs)
 11. [Registers & operands](#11-registers--operands)
 12. [Branches](#12-branches)
-13. [Loops](#13-loops)
+13. [Repeat](#13-repeat)
 14. [Arithmetic](#14-arithmetic)
 15. [On-device reads](#15-on-device-reads)
 16. [Internet & JSON in a task](#16-internet--json-in-a-task)
@@ -169,6 +169,7 @@ let ids  = try await client.queryAllTasks()
 let info = try await client.queryTask(id: 1)    // position / length / next run
 try await client.deleteTask(id: 1)
 try await client.resetTasks()                   // delete all
+try await client.systemReset()                  // full Firmata reset — the device re-initialises
 ```
 
 Limits: 8 task slots, 512 recorded bytes per task, ids 0–127. One-shot tasks remove
@@ -226,6 +227,16 @@ Pin a public register when the value must be visible to the host or another task
 Operand literals: `.number(_)`, `.float(_)`, `.bool(_)`; registers: `.reg(_)`,
 `.freg(_)`, `.boolReg(_)`.
 
+Pins can also be **written from operands** — the value comes out of a register or
+variable at run time, routed by the pin's mode on the device:
+
+```swift
+let btn = board.digitalRead(pin: .pin(7))
+board.digitalWrite(pin: .pin(2), high: btn)          // mirror a pin (TaskBool operand)
+board.analogWrite(pin: .pin(4), value: .reg(3))      // PWM duty from R3
+board.servoWrite(pin: .pin(13), value: .reg(5))      // angle/pulse from R5
+```
+
 ## 12. Branches
 
 ```swift
@@ -244,21 +255,21 @@ let ok = board.compare(light, .greaterOrEqual, .number(100))   // -> TaskBool, r
 Comparisons: `.equal .notEqual .lessThan .greaterThan .lessOrEqual .greaterOrEqual`.
 Mixed int/float comparisons promote to float. Branches nest arbitrarily.
 
-## 13. Loops
+## 13. Repeat
 
-`loop(_:gap:)` runs a block exactly N times on the device, pausing `gap` between
-iterations (never after the last) — a native counted loop, not host-side unrolling,
-so the task stays tiny regardless of N.
+`repeat(times:gap:)` runs a block exactly N times on the device, pausing `gap`
+between iterations (never after the last) — a native counted loop, not host-side
+unrolling, so the task stays tiny regardless of N.
 
 ```swift
-board.loop(5, gap: .milliseconds(200)) {
+board.repeat(times: 5, gap: .milliseconds(200)) {
     $0.digitalWrite(pin: .pin(2), high: true)
     $0.delay(.milliseconds(50))
     $0.digitalWrite(pin: .pin(2), high: false)
 }
 ```
 
-Loops nest up to 4 deep; `count 0` skips the body. This is the reliable way to do
+Repeats nest up to 4 deep; `times: 0` skips the body. This is the reliable way to do
 something *exactly* N times — e.g. wrap a single IR send to press a remote key N
 times (see [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR)).
 
@@ -315,6 +326,17 @@ The snapshot pool has 12 slots: 2 for JSON bodies, 10 for strings. Slots
 auto-allocate and wrap; pin one with `into: TaskJSONSlot(0…1)` /
 `TaskStringSlot(0…9)` to share it across tasks or protect it from wraparound.
 
+A **live** (un-snapshotted) body handle can go stale — `isValid()` records a bool
+that reads `true` while the captured body is still the current one (an owned
+snapshot is always valid):
+
+```swift
+board.ifTrue(resp.body.isValid()) {
+    let level = $0.json.getNumber(resp.body, "sensor.level")
+    $0.ifTrue(level, .greaterThan, .number(80)) { $0.digitalWrite(pin: .pin(2), high: true) }
+}
+```
+
 ## 17. Strings
 
 `json.getString` captures a JSON string's (unquoted) content into a string slot;
@@ -329,6 +351,7 @@ let eq   = board.string.equals(name, "esp32")               // TaskBool
 let has  = board.string.contains(name, "32")
 let at   = board.string.indexOf(name, "32")                 // -1 if absent
 let num  = board.string.toInt(name)                         // clamped Int32
+name.changeSlot(TaskStringSlot(3))                          // copy to slot 3, rebind the handle
 board.string.free(tag)                                      // release the slot
 ```
 

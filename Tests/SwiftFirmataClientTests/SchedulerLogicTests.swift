@@ -61,7 +61,7 @@ struct SchedulerLogicTests {
 
     @Test func loopOpEncodesBeginBodyEnd() {
         var r = FirmataTaskRecorder()
-        r.loop(3, gap: .milliseconds(200)) { $0.digitalWrite(pin: .pin(5), high: true) }
+        r.repeat(times: 3, gap: .milliseconds(200)) { $0.digitalWrite(pin: .pin(5), high: true) }
         // LOOP_BEGIN(count=3, gap=200 -> 72|1<<7, skip=8 = body(3) + LOOP_END(5)); body; LOOP_END
         #expect(r.bytes == [
             0xF0, 0x7B, 0x7F, 0x34, 0x03, 0x00, 72, 0x01, 0x08, 0x00, 0xF7, // EXT LOOP
@@ -75,8 +75,8 @@ struct SchedulerLogicTests {
     @Test func loopVMFiresBodyExactlyNTimes() {
         func fires(_ count: Int, nested inner: Int? = nil) -> Int {
             var r = FirmataTaskRecorder()
-            r.loop(count, gap: .milliseconds(10)) { o in
-                if let inner { o.loop(inner, gap: .milliseconds(10)) { $0.digitalWrite(pin: .pin(5), high: true) } }
+            r.repeat(times: count, gap: .milliseconds(10)) { o in
+                if let inner { o.repeat(times: inner, gap: .milliseconds(10)) { $0.digitalWrite(pin: .pin(5), high: true) } }
                 else { o.digitalWrite(pin: .pin(5), high: true) }
             }
             return simulateLoop(r.bytes)

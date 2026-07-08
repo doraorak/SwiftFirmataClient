@@ -54,16 +54,16 @@ public final class FirmataTaskRecorder {
     internal func emit(_ b: [UInt8]) { bytes += b }
 
     /// Next register handed out by ``digitalRead(pin:)`` / ``analogRead(channel:)``
-    /// (descends `R15 → R0`, then wraps).
+    /// (descends the internal bank `R31 → R16`, then wraps).
     private var nextAutoRegister: TaskNumberRegister = .reg(31)
     /// Next float register auto-allocated for `getFloat` / float arithmetic
-    /// (descends `F7 → F0`, then wraps).
+    /// (descends the internal bank `F15 → F8`, then wraps).
     private var nextAutoFloatRegister: TaskFloatRegister = .freg(15)
     /// Next JSON snapshot slot (0–1) and string slot (0–9), each wrapping.
     private var nextTaskJSONSlot: UInt8 = 0
     private var nextTaskStringSlot: UInt8 = 0
-    /// Generation registers (for handle staleness) allocate bottom-up (R0↑) so they
-    /// don't collide with the top-down (R15↓) pool used by reads/arithmetic results.
+    /// Generation registers (for handle staleness) allocate bottom-up (R16↑) so they
+    /// don't collide with the top-down (R31↓) pool used by reads/arithmetic results.
     private var nextRequestCountRegister: TaskNumberRegister = .reg(16)
 
     public init() {}
@@ -429,8 +429,8 @@ public final class FirmataTaskRecorder {
         let r = allocateRegister(); analogRead(into: r, channel: channel); return r
     }
 
-    /// Hand out the next auto-allocated register, descending `R15 → R0` then wrapping
-    /// (kept high to avoid clashing with low registers you set explicitly).
+    /// Hand out the next auto-allocated register, descending the internal bank
+    /// `R31 → R16` then wrapping (never touches the public `R0–R15`).
     internal func allocateRegister() -> TaskNumberRegister {
         let r = nextAutoRegister
         let raw = r.index
@@ -515,20 +515,20 @@ public final class FirmataTaskRecorder {
     }
 
     /**
-     Record a **counted loop** — run `body` exactly `count` times, pausing `gap` between
-     iterations (not after the last). Runs on-device via a native scheduler loop op
-     (firmware 2.13+), so the task stays a fixed handful of bytes regardless of `count`.
-     Any recorded actions are allowed inside, including nested loops (up to the firmware's
-     nesting depth). `count == 0` runs `body` zero times.
+     Record a **counted repeat** — run `body` exactly `times` times, pausing `gap` between
+     iterations (not after the last). Runs on-device via a native scheduler loop op, so
+     the task stays a fixed handful of bytes regardless of the count. Any recorded actions
+     are allowed inside, including nested repeats (up to the firmware's nesting depth).
+     `times == 0` runs `body` zero times.
 
      ```swift
-     board.loop(4, gap: .milliseconds(220)) {
+     board.repeat(times: 4, gap: .milliseconds(220)) {
          $0.irSendRC6(0x11)          // volume down, four distinct presses
      }
      ```
      */
-    public func loop(_ count: Int, gap: Duration = .zero,
-                     _ body: (FirmataTaskRecorder) -> Void) {
+    public func `repeat`(times count: Int, gap: Duration = .zero,
+                         _ body: (FirmataTaskRecorder) -> Void) {
         let bodyRec = FirmataTaskRecorder(inheriting: self); body(bodyRec)
         adoptCursors(from: bodyRec)
         let bodyBytes = bodyRec.bytes

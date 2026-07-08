@@ -92,8 +92,8 @@ survive disconnects and live in RAM until deleted or reboot. Every recipe is in 
   auto-allocate their results so they never clobber your public registers. Pin an
   explicit public destination with `into: .reg(n)`.
 - **Branches** — `ifTrue(a, .lessThan, b, then: { … }, elseDo: { … })`, nestable.
-- **Loops** — `loop(5, gap: .milliseconds(200)) { … }` runs a block exactly N times
-  on-device (a native counted loop, nestable up to 4 deep).
+- **Repeat** — `repeat(times: 5, gap: .milliseconds(200)) { … }` runs a block exactly
+  N times on-device (a native counted loop, nestable up to 4 deep).
 - **Math** — `add` / `subtract` / `multiply` / `divide` / `modulo` + float variants
   (`÷0 → 0`).
 - **Reads** — `digitalRead` / `analogRead`; `i2cRead` (register pointer + up to 4
