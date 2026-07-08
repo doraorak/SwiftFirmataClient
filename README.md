@@ -21,7 +21,7 @@ Both firmwares speak the identical wire protocol — use whichever toolchain you
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "15.1.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.0.0")
 ```
 
 Pair with firmware **2.15+**.
