@@ -87,6 +87,19 @@ try await client.configureServo(pin: .pin(13), minPulseMicros: 1000, maxPulseMic
 try await client.servoWrite(pin: .pin(13), value: 1500)            // ≥ 544 = raw pulse µs
 ```
 
+### More pin modes & PWM control (firmware 2.16+)
+
+```swift
+try await client.setPinMode(.pin(27), mode: .inputPulldown)   // internal pull-down
+try await client.setPinMode(.pin(32), mode: .touch)           // capacitive touch T0–T9
+let raw = try await client.analogRead(channel: .touch(9))     // touch rides analog ch 6–15; low = touched
+try await client.setPinMode(.pin(25), mode: .dac)             // true analog out (GPIO 25/26)
+try await client.extendedAnalogWrite(pin: .pin(25), value: 200)
+
+try await client.configurePWM(pin: .pin(4), frequencyHz: 25_000, resolutionBits: 10)
+try await client.extendedAnalogWrite(pin: .pin(4), value: 512)   // duty in the new resolution
+```
+
 ## 4. Input streams
 
 ```swift
@@ -189,6 +202,11 @@ try await client.uploadTask(id: 1) { board in
 
     board.configureI2C()                        // I²C from a task (OLED, sensors…)
     board.i2cWrite(address: 0x3C, data: [0x00, 0xAE])
+
+    // firmware 2.17+: run-time operands where it matters
+    board.configurePWM(pin: .pin(4), frequency: .reg(6))   // LEDC freq from a register
+    board.delay(TaskNumberRegister.reg(4))                 // wait R4 milliseconds
+    board.tone(pin: .pin(19), hz: .reg(5), duration: .number(150))   // beep: freq/duration operands
 }
 ```
 
@@ -272,6 +290,22 @@ board.repeat(times: 5, gap: .milliseconds(200)) {
 Repeats nest up to 4 deep; `times: 0` skips the body. This is the reliable way to do
 something *exactly* N times — e.g. wrap a single IR send to press a remote key N
 times (see [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR)).
+
+### Once — run a block a single time (firmware 2.17+)
+
+`once { }` guards its body with a per-task flag: on a `repeatEvery:` task the body
+runs on the **first pass only** — one-time setup (configure a display, arm a
+receiver) without re-running it every period. The flag resets when the task is
+re-uploaded, never on the repeat wraparound. Up to 32 per task, nesting allowed.
+
+```swift
+try await client.uploadTask(id: 3, repeatEvery: .seconds(2)) { board in
+    board.once { setup in
+        setup.displayConfigure(address: 0x3C)     // first pass only
+    }
+    board.displayPrint(.reg(0), line: 3)          // every pass
+}
+```
 
 ## 14. Arithmetic
 

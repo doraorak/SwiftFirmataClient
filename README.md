@@ -13,6 +13,9 @@ arrives on one `messages` `AsyncStream`.
 |---|---|
 | [SwiftFirmataClient](https://github.com/doraorak/SwiftFirmataClient) | This package — the host-side client (macOS 13+ / iOS 16+, Swift 6) |
 | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) | Optional IR (infrared) add-on package |
+| [SwiftFirmataSonar](https://github.com/doraorak/SwiftFirmataSonar) | Optional HC-SR04/US-100 distance add-on |
+| [SwiftFirmataDHT](https://github.com/doraorak/SwiftFirmataDHT) | Optional DHT11/DHT22 climate add-on |
+| [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) | Optional SSD1306/SH1106 OLED add-on |
 | [ESP32FirmataSwift](https://github.com/doraorak/ESP32FirmataSwift) | ESP32 firmware in Embedded Swift (ESP-IDF) |
 | [ESP32Firmata](https://github.com/doraorak/ESP32Firmata) | The same firmware in C++ (Arduino) |
 
@@ -21,10 +24,10 @@ Both firmwares speak the identical wire protocol — use whichever toolchain you
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.0.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.1.0")
 ```
 
-Pair with firmware **2.15+**.
+Pair with firmware **2.17+** for everything below (the core works on 2.15+).
 
 ## Quick start
 

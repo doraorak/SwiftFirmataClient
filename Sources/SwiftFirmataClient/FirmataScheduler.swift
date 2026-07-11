@@ -65,6 +65,8 @@ public final class FirmataTaskRecorder {
     /// Generation registers (for handle staleness) allocate bottom-up (R16↑) so they
     /// don't collide with the top-down (R31↓) pool used by reads/arithmetic results.
     private var nextRequestCountRegister: TaskNumberRegister = .reg(16)
+    /// Next `once { }` guard index (0–31; the firmware keeps one 32-bit mask per task).
+    private var nextOnceIndex: UInt8 = 0
 
     public init() {}
 
@@ -81,6 +83,7 @@ public final class FirmataTaskRecorder {
         nextTaskJSONSlot         = parent.nextTaskJSONSlot
         nextTaskStringSlot       = parent.nextTaskStringSlot
         nextRequestCountRegister = parent.nextRequestCountRegister
+        nextOnceIndex            = parent.nextOnceIndex
     }
 
     /// Resume allocation where a nested-branch recorder left off, so registers/slots
@@ -91,6 +94,7 @@ public final class FirmataTaskRecorder {
         nextTaskJSONSlot         = child.nextTaskJSONSlot
         nextTaskStringSlot       = child.nextTaskStringSlot
         nextRequestCountRegister = child.nextRequestCountRegister
+        nextOnceIndex            = child.nextOnceIndex
     }
 
     /**
@@ -198,6 +202,77 @@ public final class FirmataTaskRecorder {
         } else {
             extendedAnalogWrite(pin: pin, value: value)
         }
+    }
+
+    /// Record a PWM frequency/resolution config (`PWM_CONFIG` — same bytes as the live
+    /// call; the replay parser shares the handler). Firmware 2.16+.
+    public func configurePWM(pin: TaskPin, frequencyHz: UInt32, resolutionBits: UInt8 = 8) {
+        let f = min(frequencyHz, 0x1F_FFFF)
+        bytes += [Cmd.startSysEx, SysEx.pwmConfig, pin.number & 0x7F,
+                  UInt8(f & 0x7F), UInt8((f >> 7) & 0x7F), UInt8((f >> 14) & 0x7F),
+                  min(max(resolutionBits, 1), 14),
+                  Cmd.endSysEx]
+    }
+
+    /// Record a **tone**: beep a passive buzzer on a `.pwm` pin at `hz` for `duration`.
+    /// Pure composition — `configurePWM(hz)` + 50 % duty + delay + duty 0 — so the
+    /// timing runs on-device like everything else. Firmware 2.16+.
+    public func tone(pin: TaskPin, hz: UInt32, duration: Duration) {
+        configurePWM(pin: pin, frequencyHz: hz, resolutionBits: 8)
+        extendedAnalogWrite(pin: pin, value: 128)          // 50 % of 8-bit
+        delay(duration)
+        extendedAnalogWrite(pin: pin, value: 0)
+    }
+
+    /// Record a PWM frequency set from an **operand** — the pitch comes out of a
+    /// register/variable at run time (e.g. tone follows a sensor). Puts the pin in
+    /// PWM mode at 8-bit duty resolution. Firmware 2.16+.
+    public func configurePWM(pin: TaskPin, frequency: TaskNumber) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extPwmFreq,
+                  pin.number & 0x7F] + frequency.operandBytes + [Cmd.endSysEx]
+    }
+
+    /// Record a delay whose **milliseconds come from an operand** (register/variable/
+    /// literal, evaluated at run time). Negative values delay 0. Firmware 2.16+.
+    public func delay(_ milliseconds: TaskNumber) {
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extDelayOp]
+               + milliseconds.operandBytes + [Cmd.endSysEx]
+    }
+
+    /// Record a **tone with operand pitch and/or duration** — either side may be a
+    /// literal (`.number(440)`) or a register/variable. Firmware 2.16+.
+    public func tone(pin: TaskPin, hz: TaskNumber, duration: TaskNumber) {
+        configurePWM(pin: pin, frequency: hz)
+        extendedAnalogWrite(pin: pin, value: 128)
+        delay(duration)
+        extendedAnalogWrite(pin: pin, value: 0)
+    }
+
+    /**
+     Record a **run-once block**: `body` executes on the task's FIRST pass only —
+     later passes (a `repeatEvery:` task looping, or re-entry inside a `repeat`)
+     skip it. The guard is a per-task once-mask bit in the firmware, cleared when
+     the task is (re)scheduled, so re-uploading the task arms it again. Up to 32
+     `once` blocks per task. Firmware 2.16+.
+
+     ```swift
+     try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
+         board.once { $0.displayConfigure(kind: .sh1106) }   // init once
+         board.displayPrint(.freg(0), line: 2)               // every pass
+     }
+     ```
+     */
+    public func once(_ body: (FirmataTaskRecorder) -> Void) {
+        precondition(nextOnceIndex < 32, "a task supports at most 32 once { } blocks")
+        let idx = nextOnceIndex
+        nextOnceIndex += 1
+        let bodyRec = FirmataTaskRecorder(inheriting: self); body(bodyRec)
+        adoptCursors(from: bodyRec)
+        let bodyBytes = bodyRec.bytes
+        let skip = UInt16(min(bodyBytes.count, 0x3FFF))
+        bytes += [Cmd.startSysEx, SysEx.schedulerData, Sched.extCommand, Sched.extOnce,
+                  idx, UInt8(skip & 0x7F), UInt8((skip >> 7) & 0x7F), Cmd.endSysEx]
+        bytes += bodyBytes
     }
 
     /// Record "deliver `payload` to module `id`" — the task-side twin of

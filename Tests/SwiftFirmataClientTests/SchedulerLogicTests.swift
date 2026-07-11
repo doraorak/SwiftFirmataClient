@@ -70,6 +70,77 @@ struct SchedulerLogicTests {
         ])
     }
 
+    @Test func pwmConfigEncoding() {
+        var r = FirmataTaskRecorder()
+        r.configurePWM(pin: .pin(4), frequencyHz: 2000, resolutionBits: 8)
+        // 2000 = 0x7D0 -> 7-bit LE limbs 0x50, 0x0F, 0x00
+        #expect(r.bytes == [0xF0, 0x0E, 0x04, 0x50, 0x0F, 0x00, 0x08, 0xF7])
+    }
+
+    @Test func toneComposesConfigDutyDelayOff() {
+        var r = FirmataTaskRecorder()
+        r.tone(pin: .pin(4), hz: 440, duration: .milliseconds(100))
+
+        var expected = FirmataTaskRecorder()
+        expected.configurePWM(pin: .pin(4), frequencyHz: 440, resolutionBits: 8)
+        expected.extendedAnalogWrite(pin: .pin(4), value: 128)
+        expected.delay(.milliseconds(100))
+        expected.extendedAnalogWrite(pin: .pin(4), value: 0)
+        #expect(r.bytes == expected.bytes)
+    }
+
+    @Test func touchChannelsMapToSixThroughFifteen() {
+        #expect(FirmataChannel.touch(0).number == 6)
+        #expect(FirmataChannel.touch(9).number == 15)
+        #expect(TaskChannel.touch(3).number == 9)
+        #expect(PinMode.inputPulldown.rawValue == 0x10)
+        #expect(PinMode.touch.rawValue == 0x11)
+        #expect(PinMode.dac.rawValue == 0x12)
+    }
+
+    @Test func pwmFreqAndDelayOperandEncoding() {
+        let r = FirmataTaskRecorder()
+        r.configurePWM(pin: .pin(4), frequency: .reg(3))
+        r.delay(TaskNumberRegister.reg(2))
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x36, 0x04, 0x00, 0x03, 0xF7,   // PWM_FREQ pin4 <reg 3>
+            0xF0, 0x7B, 0x7F, 0x37, 0x00, 0x02, 0xF7,         // DELAY_OP <reg 2>
+        ])
+    }
+
+    @Test func onceEncodesGuardSkipAndIndexes() {
+        let r = FirmataTaskRecorder()
+        r.once { $0.digitalWrite(pin: .pin(5), high: true) }
+        r.once { $0.digitalWrite(pin: .pin(5), high: false) }
+        #expect(r.bytes == [
+            0xF0, 0x7B, 0x7F, 0x38, 0x00, 0x03, 0x00, 0xF7,   // ONCE idx 0, skip 3
+            0xF5, 0x05, 0x01,
+            0xF0, 0x7B, 0x7F, 0x38, 0x01, 0x03, 0x00, 0xF7,   // ONCE idx 1, skip 3
+            0xF5, 0x05, 0x00,
+        ])
+    }
+
+    @Test func onceIndexSurvivesNesting() {
+        let r = FirmataTaskRecorder()
+        r.repeat(times: 2) { o in
+            o.once { $0.digitalWrite(pin: .pin(5), high: true) }   // idx 0 inside the branch
+        }
+        r.once { $0.digitalWrite(pin: .pin(5), high: false) }      // must be idx 1
+        let tail = Array(r.bytes.suffix(11))
+        #expect(tail[3] == 0x38 && tail[4] == 0x01)
+    }
+
+    @Test func toneOperandComposition() {
+        let r = FirmataTaskRecorder()
+        r.tone(pin: .pin(19), hz: .reg(4), duration: .number(200))
+        let expected = FirmataTaskRecorder()
+        expected.configurePWM(pin: .pin(19), frequency: .reg(4))
+        expected.extendedAnalogWrite(pin: .pin(19), value: 128)
+        expected.delay(TaskNumberLiteral(rawValue: 200))
+        expected.extendedAnalogWrite(pin: .pin(19), value: 0)
+        #expect(r.bytes == expected.bytes)
+    }
+
     // Host-side simulation of the firmware scheduler's execute()+loopBegin/loopEnd over the real
     // recorder byte stream — proves the body fires exactly N times (incl. nesting / count 0), no board.
     @Test func loopVMFiresBodyExactlyNTimes() {

@@ -752,6 +752,17 @@ public actor FirmataClient {
                                   Cmd.endSysEx])
     }
 
+    /// Set a PWM pin's LEDC frequency (Hz, up to 2 MHz) and duty resolution (1–14 bits)
+    /// — `PWM_CONFIG`. `setPinMode(pin, mode: .pwm)` keeps the firmware default; use
+    /// this for motors (20 kHz+) or a passive buzzer (the frequency *is* the tone).
+    private func configurePWM(pin: UInt8, frequencyHz: UInt32, resolutionBits: UInt8) async throws {
+        let f = min(frequencyHz, 0x1F_FFFF)                       // 3 × 7-bit little-endian
+        try await transport.send([Cmd.startSysEx, SysEx.pwmConfig, pin & 0x7F,
+                                  UInt8(f & 0x7F), UInt8((f >> 7) & 0x7F), UInt8((f >> 14) & 0x7F),
+                                  min(max(resolutionBits, 1), 14),
+                                  Cmd.endSysEx])
+    }
+
     /// Drive a servo pin: `0…180` is an angle in degrees; `≥ 544` is a raw pulse
     /// width in µs (standard Firmata dual meaning). Routes through the analog
     /// message for pins ≤ 15 and extended analog above.
@@ -1200,5 +1211,9 @@ public extension FirmataClient {
         try await configureServo(pin: pin.number,
                                  minPulseMicros: minPulseMicros,
                                  maxPulseMicros: maxPulseMicros)
+    }
+    /// PWM frequency/resolution config — `.pin(4)`. Firmware 2.16+.
+    func configurePWM(pin: FirmataPin, frequencyHz: UInt32, resolutionBits: UInt8 = 8) async throws {
+        try await configurePWM(pin: pin.number, frequencyHz: frequencyHz, resolutionBits: resolutionBits)
     }
 }

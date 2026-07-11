@@ -19,26 +19,52 @@ public enum PinMode: UInt8, Sendable, CaseIterable, CustomStringConvertible {
     case tone        = 0x0E
     case dht         = 0x0F
 
+    // ESP32 firmware extensions (block 0x10+, clear of the standard table above).
+    case inputPulldown = 0x10   // internal pull-down (no pulls on GPIO 34–39)
+    case touch         = 0x11   // capacitive touch — reads via analog channels 6–15 (T0–T9)
+    case dac           = 0x12   // true 8-bit analog out (GPIO 25/26)
+
     public var description: String {
         switch self {
-        case .input:       return "INPUT"
-        case .output:      return "OUTPUT"
-        case .analog:      return "ANALOG"
-        case .pwm:         return "PWM"
-        case .servo:       return "SERVO"
-        case .shift:       return "SHIFT"
-        case .i2c:         return "I2C"
-        case .oneWire:     return "ONE_WIRE"
-        case .stepper:     return "STEPPER"
-        case .encoder:     return "ENCODER"
-        case .serial:      return "SERIAL"
-        case .inputPullup: return "INPUT_PULLUP"
-        case .spi:         return "SPI"
-        case .sonar:       return "SONAR"
-        case .tone:        return "TONE"
-        case .dht:         return "DHT"
+        case .input:         return "INPUT"
+        case .output:        return "OUTPUT"
+        case .analog:        return "ANALOG"
+        case .pwm:           return "PWM"
+        case .servo:         return "SERVO"
+        case .shift:         return "SHIFT"
+        case .i2c:           return "I2C"
+        case .oneWire:       return "ONE_WIRE"
+        case .stepper:       return "STEPPER"
+        case .encoder:       return "ENCODER"
+        case .serial:        return "SERIAL"
+        case .inputPullup:   return "INPUT_PULLUP"
+        case .spi:           return "SPI"
+        case .sonar:         return "SONAR"
+        case .tone:          return "TONE"
+        case .dht:           return "DHT"
+        case .inputPulldown: return "INPUT_PULLDOWN"
+        case .touch:         return "TOUCH"
+        case .dac:           return "DAC"
         }
     }
+}
+
+// MARK: - Touch channels
+
+public extension FirmataChannel {
+    /**
+     The analog channel for ESP32 touch sensor `Tn` (0–9). Touch readings ride the
+     analog paths on **channels 6–15** (ADC owns 0–5): set the sensor's GPIO to
+     `.touch`, then report/read its touch channel like any analog channel.
+     T0–T9 → GPIO 4, 0, 2, 15, 13, 12, 14, 27, 33, 32.
+     */
+    static func touch(_ sensor: UInt8) -> FirmataChannel { .channel(6 + min(sensor, 9)) }
+}
+
+public extension TaskChannel {
+    /// Task-side spelling of ``FirmataChannel/touch(_:)`` — touch sensor `Tn` (0–9) as
+    /// its analog channel (6–15) for `board.analogRead`.
+    static func touch(_ sensor: UInt8) -> TaskChannel { .channel(6 + min(sensor, 9)) }
 }
 
 // MARK: - I2C mode
@@ -98,6 +124,7 @@ internal enum SysEx {
     internal static let samplingInterval:      UInt8 = 0x7A
     internal static let samplingIntervalQuery: UInt8 = 0x7C
     internal static let moduleData:            UInt8 = 0x0D  // module subsystem (user range)
+    internal static let pwmConfig:             UInt8 = 0x0E  // per-pin LEDC freq/resolution (user range)
     internal static let servoConfig:           UInt8 = 0x70
     internal static let schedulerData:         UInt8 = 0x7B
 }
@@ -169,6 +196,9 @@ internal enum Sched {
     internal static let extModuleOp:    UInt8 = 0x33  // deliver a payload to a module from a task
     internal static let extLoop:        UInt8 = 0x34  // begin a counted loop: count gap skip (skip past body when count==0)
     internal static let extLoopEnd:     UInt8 = 0x35  // end of a counted loop: decrement, jump back + gap, or exit
+    internal static let extPwmFreq:     UInt8 = 0x36  // set a PWM pin's frequency from an operand (runtime value)
+    internal static let extDelayOp:     UInt8 = 0x37  // delay milliseconds from an operand (runtime value)
+    internal static let extOnce:        UInt8 = 0x38  // once-per-task-lifetime guard: idx, skip body when already run
 
     // Task-extension register file. R0-15 / F0-7 are public (user); R16-31 / F8-15 are internal
     // (auto-allocation + library scratch). The wire index masks derive from the counts.
