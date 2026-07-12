@@ -298,8 +298,8 @@ public final class FirmataTaskRecorder {
 
      Registers and slots are global across tasks: the child inherits this recorder's
      auto-allocation cursors (like a branch), and pinned registers (`into: .reg(n)`)
-     are the way to pass values parent → child. The child must fit the 512-byte task
-     budget and its ~8/7-encoded upload also counts toward the parent's 512. Never
+     are the way to pass values parent → child. The child must fit the 4096-byte task
+     budget and its ~8/7-encoded upload also counts toward the parent's 4096. Never
      reuse the enclosing task's own id — the firmware refuses the slot.
 
      - Parameters:
