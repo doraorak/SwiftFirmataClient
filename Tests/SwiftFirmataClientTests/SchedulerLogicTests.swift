@@ -7,6 +7,19 @@ struct SchedulerLogicTests {
     // All logic ops ride the standard scheduler's reserved extension command
     // (0x7F, EXTENDED_SCHEDULER_COMMAND): F0 7B 7F <ext-subcmd> … F7.
 
+    @Test func registerCopyCompilesAsAddZero() {
+        let a = FirmataTaskRecorder()
+        a.setRegister(.reg(5), to: TaskNumberRegister.reg(9))
+        let b = FirmataTaskRecorder()
+        _ = b.add(TaskNumberRegister.reg(9), .number(0), into: .reg(5))
+        #expect(a.bytes == b.bytes)
+        let c = FirmataTaskRecorder()
+        c.setFloatRegister(.freg(2), to: TaskFloatRegister.freg(6))
+        let d = FirmataTaskRecorder()
+        _ = d.addFloat(TaskFloatRegister.freg(6), .float(0), into: .freg(2))
+        #expect(c.bytes == d.bytes)
+    }
+
     @Test func setRegisterEncoding() {
         var r = FirmataTaskRecorder()
         r.setRegister(.reg(3), to: .number(512))

@@ -440,6 +440,23 @@ public final class FirmataTaskRecorder {
     }
 
     /**
+     Record `R[dst] = R[src]` — copy one register into another. Compiles as
+     `src + 0 → dst` (the arithmetic op takes register operands), so it needs no
+     dedicated firmware op and works on any firmware with arithmetic (2.12+).
+     */
+    public func setRegister(_ dst: TaskNumberRegister, to source: TaskNumberRegister) {
+        _ = add(source, .number(0), into: dst)
+    }
+
+    /**
+     Record `F[dst] = F[src]` — copy one float register into another
+     (`src + 0.0 → dst` via the float arithmetic op).
+     */
+    public func setFloatRegister(_ dst: TaskFloatRegister, to source: TaskFloatRegister) {
+        _ = addFloat(source, .float(0), into: dst)
+    }
+
+    /**
      Record `register = digitalRead(pin)` (stores `0`/`1`). The pin should be an
      input — record `setPinMode(.pin(p), mode: .input)` earlier in the task.
      - Parameters:
@@ -1039,6 +1056,15 @@ public struct TaskStringOps {
         rec.appendLengthPrefixed(&m, value)
         m.append(Cmd.endSysEx); rec.emit(m)
         return TaskString(slot: dst, rec: rec)
+    }
+
+    /// Reserve a string slot and return a handle WITHOUT writing anything to it — unlike
+    /// ``createString(_:into:)`` this emits no wire bytes, so re-running it every pass of a
+    /// repeating task won't clear the slot. Use it as the destination for a producer that
+    /// fills the slot on the device (e.g. `board.irReceiveRawText`): the string reads empty
+    /// until the first write, then persists. The slot's memory is (re)allocated on first write.
+    public func reserveString(into slot: TaskStringSlot? = nil) -> TaskString {
+        TaskString(slot: slot ?? rec.allocateTaskStringSlot(), rec: rec)
     }
     /// `R` = byte length of the string.
     @discardableResult

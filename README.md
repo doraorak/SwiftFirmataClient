@@ -24,10 +24,10 @@ Both firmwares speak the identical wire protocol — use whichever toolchain you
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.1.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.2.0")
 ```
 
-Pair with firmware **2.17+** for everything below (the core works on 2.15+).
+Pair with firmware **2.18+** for everything below (the core works on 2.15+).
 
 ## Quick start
 

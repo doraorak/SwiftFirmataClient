@@ -225,6 +225,7 @@ try await client.uploadTask(id: 1, repeatEvery: .seconds(5)) { board in
     board.analogRead(into: .reg(3), channel: .channel(0))    // pinned: R3
 
     board.setRegister(.reg(4), to: .number(1500))            // R4 = literal
+    board.setRegister(.reg(5), to: .reg(4))                  // R5 = R4 (copy; compiles to R4 + 0)
     board.setFloatRegister(.freg(0), to: .float(21.5))       // F0 = literal
 
     // .reg(n) is also an operand — read state the host or another task wrote:
