@@ -24,7 +24,7 @@ Both firmwares speak the identical wire protocol — use whichever toolchain you
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.3.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "17.0.0")
 ```
 
 Pair with firmware **2.18+** for everything below (the core works on 2.15+).
@@ -131,7 +131,7 @@ guard try await client.queryModules().contains(where: { $0.name == "ir" }) else 
 
 ## Testing
 
-`swift test` — 135 tests, no hardware needed: a `MockTransport` plays the board
+`swift test` — 138 tests, no hardware needed: a `MockTransport` plays the board
 (including the provisioning-crypto round-trip), and the recorder's byte output is
 golden-tested against captures verified on real hardware.
 

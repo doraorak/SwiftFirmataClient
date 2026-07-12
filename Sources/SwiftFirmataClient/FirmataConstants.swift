@@ -7,17 +7,21 @@ public enum PinMode: UInt8, Sendable, CaseIterable, CustomStringConvertible {
     case analog      = 0x02
     case pwm         = 0x03
     case servo       = 0x04
-    case shift       = 0x05
     case i2c         = 0x06
-    case oneWire     = 0x07
-    case stepper     = 0x08
-    case encoder     = 0x09
-    case serial      = 0x0A
     case inputPullup = 0x0B
-    case spi         = 0x0C
-    case sonar       = 0x0D
     case tone        = 0x0E
-    case dht         = 0x0F
+
+    // Standard Firmata reserves the numbers below, but this firmware doesn't implement
+    // them as pin modes — kept (commented) only to preserve the protocol numbering.
+    // unimplemented as pinmode, see modules.
+    // case shift    = 0x05   // unimplemented as pinmode
+    // case oneWire  = 0x07   // unimplemented as pinmode
+    // case stepper  = 0x08   // unimplemented as pinmode
+    // case encoder  = 0x09   // unimplemented as pinmode
+    // case serial   = 0x0A   // unimplemented as pinmode
+    // case spi      = 0x0C   // unimplemented as pinmode
+    // case sonar    = 0x0D   // unimplemented as pinmode, see modules (SwiftFirmataSonar)
+    // case dht      = 0x0F   // unimplemented as pinmode, see modules (SwiftFirmataDHT)
 
     // ESP32 firmware extensions (block 0x10+, clear of the standard table above).
     case inputPulldown = 0x10   // internal pull-down (no pulls on GPIO 34–39)
@@ -31,17 +35,9 @@ public enum PinMode: UInt8, Sendable, CaseIterable, CustomStringConvertible {
         case .analog:        return "ANALOG"
         case .pwm:           return "PWM"
         case .servo:         return "SERVO"
-        case .shift:         return "SHIFT"
         case .i2c:           return "I2C"
-        case .oneWire:       return "ONE_WIRE"
-        case .stepper:       return "STEPPER"
-        case .encoder:       return "ENCODER"
-        case .serial:        return "SERIAL"
         case .inputPullup:   return "INPUT_PULLUP"
-        case .spi:           return "SPI"
-        case .sonar:         return "SONAR"
         case .tone:          return "TONE"
-        case .dht:           return "DHT"
         case .inputPulldown: return "INPUT_PULLDOWN"
         case .touch:         return "TOUCH"
         case .dac:           return "DAC"
@@ -125,6 +121,7 @@ internal enum SysEx {
     internal static let samplingIntervalQuery: UInt8 = 0x7C
     internal static let moduleData:            UInt8 = 0x0D  // module subsystem (user range)
     internal static let pwmConfig:             UInt8 = 0x0E  // per-pin LEDC freq/resolution (user range)
+    internal static let toneConfig:            UInt8 = 0x0B  // <pin> <freq:14b> <dur:14b> tone (user range)
     internal static let servoConfig:           UInt8 = 0x70
     internal static let schedulerData:         UInt8 = 0x7B
 }

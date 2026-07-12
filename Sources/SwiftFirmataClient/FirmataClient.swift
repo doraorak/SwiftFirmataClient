@@ -95,6 +95,11 @@ public actor FirmataClient {
     // entry tagged with a seq so a timeout cancels the exact waiter.
     private var moduleReplySeq: UInt64 = 0
     private var pendingModuleReply: [UInt8: [(seq: UInt64, cont: CheckedContinuation<[UInt8], Error>)]] = [:]
+
+    /// Modes this client has set per pin (for mode-gated writes like `toneWrite`/`dacWrite`/
+    /// `touchRead`, the host-side mirror of the firmware's route-by-mode). Cleared on
+    /// connect / systemReset. Authoritative for a single-master session.
+    private var pinModeCache: [UInt8: PinMode] = [:]
     private var modulesSeq = 0
     private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
     private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
@@ -130,6 +135,7 @@ public actor FirmataClient {
         readTask?.cancel()
         lastDisconnectReason = nil
         pendingDisconnectReason = nil
+        pinModeCache.removeAll()
         readTask = Task {
             do {
                 for try await byte in transport.openStream() {
@@ -302,6 +308,7 @@ public actor FirmataClient {
      */
     private func setPinMode(_ pin: UInt8, mode: PinMode) async throws {
         try await transport.send([Cmd.setPinMode, pin, mode.rawValue])
+        pinModeCache[pin] = mode
     }
 
     /**
@@ -494,6 +501,7 @@ public actor FirmataClient {
     /// Send a system reset; the device will re-initialise.
     public func systemReset() async throws {
         try await transport.send([Cmd.systemReset])
+        pinModeCache.removeAll()   // the board reset every pin to INPUT
     }
 
     /// Set the analog sampling interval (default 19 ms on standard firmware).
@@ -1238,6 +1246,51 @@ public extension FirmataClient {
     func setPinMode(_ pin: FirmataPin, mode: PinMode) async throws {
         try await setPinMode(pin.number, mode: mode)
     }
+
+    /// Play a **tone** — a 50 % square wave at `hz` — on a `.tone` pin; continuous until you
+    /// call `toneWrite(pin, hz: 0)`. Like `analogWrite` needs `.pwm`, this needs the pin in
+    /// `.tone` mode (set it with `setPinMode(.pin(n), mode: .tone)`); throws otherwise.
+    func toneWrite(pin: FirmataPin, hz: UInt32) async throws {
+        try await sendTone(pin: pin, hz: hz, durationMs: 0)
+    }
+
+    /// Play a **tone** for `duration`, then the firmware auto-stops it — `.tone` pin.
+    func toneWrite(pin: FirmataPin, hz: UInt32, for duration: Duration) async throws {
+        let c = duration.components
+        let ms = c.seconds * 1000 + c.attoseconds / 1_000_000_000_000_000
+        try await sendTone(pin: pin, hz: hz, durationMs: ms < 0 ? 0 : UInt32(clamping: ms))
+    }
+
+    /// Write the **DAC** (0–255) on a `.dac` pin (GPIO 25/26); needs the pin in `.dac` mode.
+    func dacWrite(pin: FirmataPin, value: UInt8) async throws {
+        guard pinModeCache[pin.number] == .dac else { throw FirmataError.invalidData }
+        try await extendedAnalogWrite(pin: pin, value: Int32(value))
+    }
+
+    /// One-shot **capacitive-touch** read on a `.touch` pin (lower value = touched); needs the
+    /// pin in `.touch` mode. Reads the sensor's analog channel (touch T0–T9 → channels 6–15).
+    func touchRead(pin: FirmataPin, timeout: Duration = .seconds(2)) async throws -> UInt16 {
+        guard pinModeCache[pin.number] == .touch else { throw FirmataError.invalidData }
+        guard let sensor = FirmataClient.touchSensorOf(pin.number) else { throw FirmataError.invalidData }
+        return try await analogRead(channel: .touch(sensor), timeout: timeout)
+    }
+
+    /// TONE_CONFIG frame: `<pin> <freq:14b LE> <dur:14b LE>` (freq/dur clamped to 16383).
+    private func sendTone(pin: FirmataPin, hz: UInt32, durationMs: UInt32) async throws {
+        guard pinModeCache[pin.number] == .tone else { throw FirmataError.invalidData }
+        let f = min(hz, 0x3FFF), d = min(durationMs, 0x3FFF)
+        try await transport.send([Cmd.startSysEx, SysEx.toneConfig, pin.number & 0x7F,
+                                  UInt8(f & 0x7F), UInt8((f >> 7) & 0x7F),
+                                  UInt8(d & 0x7F), UInt8((d >> 7) & 0x7F), Cmd.endSysEx])
+    }
+
+    /// ESP32 touch sensor index (T0–T9) for a GPIO, or `nil` if the pin isn't touch-capable.
+    /// T0–T9 → GPIO 4, 0, 2, 15, 13, 12, 14, 27, 33, 32.
+    static func touchSensorOf(_ pin: UInt8) -> UInt8? {
+        let gpio: [UInt8] = [4, 0, 2, 15, 13, 12, 14, 27, 33, 32]
+        return gpio.firstIndex(of: pin).map { UInt8($0) }
+    }
+
     /// Drive an output pin HIGH/LOW — `.pin(2)`.
     func digitalWrite(pin: FirmataPin, high: Bool) async throws {
         try await digitalWrite(pin: pin.number, high: high)

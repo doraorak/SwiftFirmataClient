@@ -52,6 +52,36 @@ struct FirmataClientTests {
         #expect(transport.lastSent == [0x90, 0x7F, 0x01])
     }
 
+    // MARK: - Tone / DAC / touch (mode-gated, like analogWrite requires .pwm)
+
+    @Test func toneWriteEncodingAndModeGuard() async throws {
+        let (client, transport) = await makeClient()
+        try await client.setPinMode(.pin(13), mode: .tone)
+        try await client.toneWrite(pin: .pin(13), hz: 440)                     // 440 -> lo 0x38, hi 0x03
+        #expect(transport.lastSent == [0xF0, 0x0B, 13, 0x38, 0x03, 0x00, 0x00, 0xF7])
+        try await client.toneWrite(pin: .pin(13), hz: 880, for: .milliseconds(200)) // 880 -> 0x70,0x06; 200 -> 0x48,0x01
+        #expect(transport.lastSent == [0xF0, 0x0B, 13, 0x70, 0x06, 0x48, 0x01, 0xF7])
+        // Wrong mode throws (the host-side mirror of the firmware's route-by-mode).
+        try await client.setPinMode(.pin(13), mode: .output)
+        await #expect(throws: FirmataError.self) { try await client.toneWrite(pin: .pin(13), hz: 440) }
+    }
+
+    @Test func dacWriteEncodingAndModeGuard() async throws {
+        let (client, transport) = await makeClient()
+        try await client.setPinMode(.pin(25), mode: .dac)
+        try await client.dacWrite(pin: .pin(25), value: 200)                   // extended-analog, 200 -> 0x48,0x01
+        #expect(transport.lastSent == [0xF0, 0x6F, 25, 0x48, 0x01, 0xF7])
+        await #expect(throws: FirmataError.self) { try await client.dacWrite(pin: .pin(2), value: 5) }
+    }
+
+    @Test func touchModeGuardAndSensorMapping() async throws {
+        #expect(FirmataClient.touchSensorOf(4)  == 0)     // T0 = GPIO 4
+        #expect(FirmataClient.touchSensorOf(32) == 9)     // T9 = GPIO 32
+        #expect(FirmataClient.touchSensorOf(5)  == nil)   // not touch-capable
+        let (client, _) = await makeClient()
+        await #expect(throws: FirmataError.self) { _ = try await client.touchRead(pin: .pin(4)) } // not in .touch mode
+    }
+
     // The typed .pin/.channel overloads forward to the bare-UInt8 versions byte-for-byte.
     @Test func typedPinChannelOverloadsMatchBare() async throws {
         let (client, transport) = await makeClient()

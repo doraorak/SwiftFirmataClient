@@ -13,7 +13,8 @@ Display). Each section is self-contained: a short "what it is", runnable snippet
 > **Firmware floor.** The core works on firmware **2.15+**. Feature minimums: modules **2.16+**,
 > raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the **4096-byte task
 > budget 2.19+** (older firmware caps a single task at 512 bytes), one-shot sonar/dht reads
-> **2.20+** (sonar/dht module 1.1). `queryFirmware()` / `queryModules()` tell you what's running.
+> **2.20+** (sonar/dht module 1.1), `.tone` pin mode + `toneWrite` **2.21+**. `queryFirmware()` /
+> `queryModules()` tell you what's running.
 
 ---
 
@@ -164,22 +165,30 @@ try await client.writeDigitalPort(0, pinMask: 0b0000_1010)   // set pins 1 & 3 o
 try await client.configurePWM(pin: .pin(5), frequencyHz: 1000, resolutionBits: 10) // 0–1023 @ 1 kHz
 try await client.extendedAnalogWrite(pin: .pin(5), value: 768)
 
-// True analog out (DAC), 0–255:
+// True analog out (DAC), 0–255 — dacWrite is gated on .dac mode:
 try await client.setPinMode(.pin(25), mode: .dac)
-try await client.extendedAnalogWrite(pin: .pin(25), value: 200)
+try await client.dacWrite(pin: .pin(25), value: 200)         // or extendedAnalogWrite(pin:value:)
 
-// Capacitive touch:
-try await client.setPinMode(.pin(4), mode: .touch)          // T0 is GPIO 4
-let t = try await client.analogRead(channel: .channel(6))    // lower = touched
+// Capacitive touch — touchRead is gated on .touch mode:
+try await client.setPinMode(.pin(4), mode: .touch)           // T0 is GPIO 4
+let t = try await client.touchRead(pin: .pin(4))             // lower = touched
+
+// Tone (passive buzzer) — toneWrite is gated on .tone mode:
+try await client.setPinMode(.pin(13), mode: .tone)
+try await client.toneWrite(pin: .pin(13), hz: 880)           // continuous — stop with hz: 0
+try await client.toneWrite(pin: .pin(13), hz: 440, for: .milliseconds(200))  // beep, auto-stops
 ```
 
 **Tips**
+- **Mode-gated writes**, just like `analogWrite` needs `.pwm`: `toneWrite`/`dacWrite`/`touchRead` require the pin in `.tone`/`.dac`/`.touch` mode (set with `setPinMode` first) and throw `FirmataError.invalidData` otherwise — the client mirrors the firmware's route-by-mode.
+- `toneWrite(hz:)` is continuous (like `analogWrite` sets a value); `toneWrite(hz:for:)` auto-stops on-device after the duration. `hz: 0` silences.
 - `.inputPulldown` is genuinely useful on the ESP32 (classic AVR Firmata has none). GPIO 34–39 are input-only with **no** internal pulls.
 - Touch values *drop* when touched. Calibrate an idle baseline, then threshold below it.
 
 **Caveats**
-- DAC exists only on GPIO 25 & 26; `.dac` elsewhere is a no-op.
-- Changing a pin's mode mid-PWM stops the PWM. Set mode → configure → write.
+- DAC exists only on GPIO 25 & 26; `.dac` elsewhere is a no-op. Tone frequency is capped at ~16 kHz (14-bit); durations at ~16 s.
+- Changing a pin's mode mid-PWM/tone stops the output. Set mode → configure → write.
+- `PinMode` lists only the modes this firmware implements (input/output/analog/pwm/servo/i2c/pullup/pulldown/touch/dac/tone). Standard-but-unimplemented modes (serial/spi/stepper/…) and the sensor subsystems (sonar/dht) are **not** pin modes here — the sensors are [modules](#24-modules--discovery--the-generic-primitive).
 
 ---
 
@@ -995,7 +1004,7 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 
 **Live values**
 - `FirmataPin` — `.pin(n)`; `FirmataChannel` — `.channel(n)`.
-- `PinMode` — `.input`/`.inputPullup`/`.inputPulldown`/`.output`/`.analog`/`.pwm`/`.servo`/`.dac`/`.touch`/`.i2c`/`.tone`/`.sonar`/`.dht`/…
+- `PinMode` — the modes this firmware implements: `.input`/`.inputPullup`/`.inputPulldown`/`.output`/`.analog`/`.pwm`/`.servo`/`.i2c`/`.touch`/`.dac`/`.tone`. Mode-gated writes: `toneWrite(pin:hz:)` / `toneWrite(pin:hz:for:)`, `dacWrite(pin:value:)`, `touchRead(pin:)`.
 - `HTTPResponse` — `.status: Int`, `.body: String`. `WiFiStatus`, `RegisterSnapshot` (`.ints`, `.floats`), `ModuleInfo` (`.id`, `.name`, version), `PinState`, `I2CReply`, `[[PinCapability]]`.
 - `FirmataMessage` — `.digital` `.analog` `.stringData` `.moduleEvent` `.i2cReply` `.registers` `.modules` … (see [§2](#2-the-messages-stream)).
 
