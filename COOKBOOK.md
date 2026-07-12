@@ -5,7 +5,8 @@ the on-device task recorder, and all four vendored hardware modules (IR, Sonar, 
 Display). Each section is self-contained: a short "what it is", runnable snippets, and a
 **Tips** / **Caveats** block where the sharp edges live.
 
-> **Conventions.** `board` is a connected `FirmataClient`. Every live call is `async throws`.
+> **Conventions.** `client` is a connected `FirmataClient`; inside `uploadTask { board in … }`,
+> `board` is the `FirmataTaskRecorder` (calls are recorded, not sent — synchronous, no `await`). Every live call is `async throws`.
 > Pins and channels are typed — pass `.pin(n)` / `.channel(n)`, never a bare integer. Snippets
 > assume `import SwiftFirmataClient` (plus the module package where relevant).
 
@@ -48,11 +49,11 @@ Display). Each section is self-contained: a short "what it is", runnable snippet
 `FirmataClient` is an `actor`. Construct it with a transport, `connect()`, and you're driving a board.
 
 ```swift
-let board = FirmataClient(transport: BonjourTransport())   // mDNS discovery on the LAN
-await board.connect()
-defer { Task { await board.disconnect() } }
+let client = FirmataClient(transport: BonjourTransport())   // mDNS discovery on the LAN
+await client.connect()
+defer { Task { await client.disconnect() } }
 
-let fw = try await board.queryFirmware()      // handshake round-trip
+let fw = try await client.queryFirmware()      // handshake round-trip
 print("\(fw.name) \(fw.major).\(fw.minor)")   // e.g. "ESP32Firmata 2.19"
 ```
 
@@ -83,7 +84,7 @@ streamed pin values, string telemetry, and module events.
 
 ```swift
 Task {
-    for await message in await board.messages {
+    for await message in await client.messages {
         switch message {
         case let .digital(port, mask):        print("port \(port) = \(mask)")
         case let .analog(channel, value):     print("A\(channel) = \(value)")
@@ -115,22 +116,22 @@ if let code = message.irCode { print("IR frame: \(String(code, radix: 16))") }
 ## 3. Digital & analog I/O
 
 ```swift
-try await board.setPinMode(.pin(2), mode: .output)
-try await board.digitalWrite(pin: .pin(2), high: true)     // LED on
+try await client.setPinMode(.pin(2), mode: .output)
+try await client.digitalWrite(pin: .pin(2), high: true)     // LED on
 
-try await board.setPinMode(.pin(4), mode: .input)          // or .inputPullup / .inputPulldown
-let pressed = try await board.digitalRead(pin: .pin(4))     // one-shot, waits for a report
+try await client.setPinMode(.pin(4), mode: .input)          // or .inputPullup / .inputPulldown
+let pressed = try await client.digitalRead(pin: .pin(4))     // one-shot, waits for a report
 
-let light = try await board.analogRead(channel: .channel(0)) // 0–4095 on the ESP32 ADC
+let light = try await client.analogRead(channel: .channel(0)) // 0–4095 on the ESP32 ADC
 
-try await board.analogWrite(channel: .channel(2), value: 512)  // 8-bit PWM via analog channel map
-try await board.extendedAnalogWrite(pin: .pin(25), value: 4095) // wide values / high pins
+try await client.analogWrite(channel: .channel(2), value: 512)  // 8-bit PWM via analog channel map
+try await client.extendedAnalogWrite(pin: .pin(25), value: 4095) // wide values / high pins
 ```
 
 Write a whole 8-pin port at once with a mask:
 
 ```swift
-try await board.writeDigitalPort(0, pinMask: 0b0000_1010)   // set pins 1 & 3 of port 0
+try await client.writeDigitalPort(0, pinMask: 0b0000_1010)   // set pins 1 & 3 of port 0
 ```
 
 **Tips**
@@ -160,16 +161,16 @@ try await board.writeDigitalPort(0, pinMask: 0b0000_1010)   // set pins 1 & 3 of
 
 ```swift
 // Explicit PWM frequency & resolution, then drive it:
-try await board.configurePWM(pin: .pin(5), frequencyHz: 1000, resolutionBits: 10) // 0–1023 @ 1 kHz
-try await board.extendedAnalogWrite(pin: .pin(5), value: 768)
+try await client.configurePWM(pin: .pin(5), frequencyHz: 1000, resolutionBits: 10) // 0–1023 @ 1 kHz
+try await client.extendedAnalogWrite(pin: .pin(5), value: 768)
 
 // True analog out (DAC), 0–255:
-try await board.setPinMode(.pin(25), mode: .dac)
-try await board.extendedAnalogWrite(pin: .pin(25), value: 200)
+try await client.setPinMode(.pin(25), mode: .dac)
+try await client.extendedAnalogWrite(pin: .pin(25), value: 200)
 
 // Capacitive touch:
-try await board.setPinMode(.pin(4), mode: .touch)          // T0 is GPIO 4
-let t = try await board.analogRead(channel: .channel(6))    // lower = touched
+try await client.setPinMode(.pin(4), mode: .touch)          // T0 is GPIO 4
+let t = try await client.analogRead(channel: .channel(6))    // lower = touched
 ```
 
 **Tips**
@@ -185,11 +186,11 @@ let t = try await board.analogRead(channel: .channel(6))    // lower = touched
 ## 5. Servo
 
 ```swift
-try await board.configureServo(pin: .pin(9),
+try await client.configureServo(pin: .pin(9),
                                minPulseMicros: 544,   // defaults shown
                                maxPulseMicros: 2400)
-try await board.servoWrite(pin: .pin(9), value: 90)   // 0–180°
-try await board.servoWrite(pin: .pin(9), value: 1500) // >180 is treated as raw microseconds
+try await client.servoWrite(pin: .pin(9), value: 90)   // 0–180°
+try await client.servoWrite(pin: .pin(9), value: 1500) // >180 is treated as raw microseconds
 ```
 
 **Tips**
@@ -206,15 +207,15 @@ try await board.servoWrite(pin: .pin(9), value: 1500) // >180 is treated as raw 
 Instead of polling, tell the board to *report* and read the `messages` stream ([§2](#2-the-messages-stream)):
 
 ```swift
-try await board.setSamplingInterval(.milliseconds(50))       // analog cadence (default ~19 ms)
-try await board.reportAnalogChannel(.channel(0), enable: true)
-try await board.reportDigitalPort(0, enable: true)           // all 8 pins of port 0
+try await client.setSamplingInterval(.milliseconds(50))       // analog cadence (default ~19 ms)
+try await client.reportAnalogChannel(.channel(0), enable: true)
+try await client.reportDigitalPort(0, enable: true)           // all 8 pins of port 0
 
-for await m in await board.messages {
+for await m in await client.messages {
     if case let .analog(0, v) = m { print("A0 = \(v)") }
 }
 // later:
-try await board.reportAnalogChannel(.channel(0), enable: false)
+try await client.reportAnalogChannel(.channel(0), enable: false)
 ```
 
 **Tips**
@@ -229,12 +230,12 @@ try await board.reportAnalogChannel(.channel(0), enable: false)
 ## 7. Queries & capabilities
 
 ```swift
-let v    = try await board.queryProtocolVersion()   // Firmata protocol major.minor
-let fw   = try await board.queryFirmware()           // name + firmware version
-let caps = try await board.queryCapabilities()       // [[PinCapability]] — modes per pin
-let map  = try await board.queryAnalogMapping()      // channel → pin
-let st   = try await board.queryPinState(pin: .pin(2))
-let mods = try await board.queryModules()            // what hardware modules are present
+let v    = try await client.queryProtocolVersion()   // Firmata protocol major.minor
+let fw   = try await client.queryFirmware()           // name + firmware version
+let caps = try await client.queryCapabilities()       // [[PinCapability]] — modes per pin
+let map  = try await client.queryAnalogMapping()      // channel → pin
+let st   = try await client.queryPinState(pin: .pin(2))
+let mods = try await client.queryModules()            // what hardware modules are present
 ```
 
 **Tips**
@@ -246,16 +247,16 @@ let mods = try await board.queryModules()            // what hardware modules ar
 ## 8. I²C
 
 ```swift
-try await board.configureI2C()                       // optional bus delay
-try await board.i2cWrite(address: 0x3C, data: [0x00, 0xAF]) // command bytes
+try await client.configureI2C()                       // optional bus delay
+try await client.i2cWrite(address: 0x3C, data: [0x00, 0xAF]) // command bytes
 
 // Read 6 bytes from register 0x00 of device 0x68 (e.g. an MPU-6050):
-let reply = try await board.i2cReadOnce(address: 0x68, registerAddress: 0x00, count: 6)
+let reply = try await client.i2cReadOnce(address: 0x68, registerAddress: 0x00, count: 6)
 print(reply.data)
 
 // Continuous reads → messages stream:
-try await board.i2cStartReading(address: 0x68, registerAddress: 0x3B, count: 6)
-try await board.i2cStopReading(address: 0x68)
+try await client.i2cStartReading(address: 0x68, registerAddress: 0x3B, count: 6)
+try await client.i2cStopReading(address: 0x68)
 ```
 
 **Tips**
@@ -273,10 +274,10 @@ try await board.i2cStopReading(address: 0x68)
 The **board's own Wi-Fi** makes the request; you get status + body back.
 
 ```swift
-let res = try await board.httpGet("http://worldtimeapi.org/api/timezone/Etc/UTC")
+let res = try await client.httpGet("http://worldtimeapi.org/api/timezone/Etc/UTC")
 print(res.status, res.body)
 
-let post = try await board.httpPost("http://example.com/log",
+let post = try await client.httpPost("http://example.com/log",
                                     body: #"{"temp":21.4}"#,
                                     timeout: .seconds(20))
 ```
@@ -298,11 +299,11 @@ The exchange is encrypted end-to-end (X25519 key agreement → HKDF → AES-GCM)
 crosses the wire in clear text.
 
 ```swift
-let status = try await board.provisionWiFi(ssid: "MyNetwork", password: "hunter2")
+let status = try await client.provisionWiFi(ssid: "MyNetwork", password: "hunter2")
 print(status.connected, status.ip ?? "—")
 
-let cur = try await board.queryWiFiStatus()
-try await board.forgetWiFi()     // clear stored credentials
+let cur = try await client.queryWiFiStatus()
+try await client.forgetWiFi()     // clear stored credentials
 ```
 
 **Tips**
@@ -326,10 +327,10 @@ share. There are **32 integer registers** (`R0–R31`, `Int32`) and **16 float r
 | **Internal** | `R16–R31` | `F8–F15` | Auto-allocated scratch for value-producing task ops, so they never clobber your public registers. |
 
 ```swift
-try await board.setRegister(3, to: 42)        // R3 = 42   (public bank, 0–15)
-try await board.setFloatRegister(0, to: 21.5) // F0 = 21.5 (public bank, 0–7)
+try await client.setRegister(3, to: 42)        // R3 = 42   (public bank, 0–15)
+try await client.setFloatRegister(0, to: 21.5) // F0 = 21.5 (public bank, 0–7)
 
-let snap = try await board.queryRegisters()
+let snap = try await client.queryRegisters()
 print(snap.ints[3], snap.floats[0])           // 42, 21.5
 ```
 
@@ -350,26 +351,26 @@ living in RAM until deleted or reboot. The recorder ([§13](#13-the-recorder--th
 verbs as bytes; `uploadTask` ships and schedules them.
 
 ```swift
-try await board.uploadTask(id: 1, repeatEvery: .milliseconds(500)) { board in
+try await client.uploadTask(id: 1, repeatEvery: .milliseconds(500)) { board in
     board.digitalWrite(pin: .pin(2), high: true)
     board.delay(.milliseconds(250))
     board.digitalWrite(pin: .pin(2), high: false)
 }
-await board.disconnect()          // it keeps blinking
+await client.disconnect()          // it keeps blinking
 
 // Low-level control:
-try await board.deleteTask(id: 1)
-try await board.resetTasks()                       // wipe all tasks
-let ids = try await board.queryAllTasks()          // [UInt8] of scheduled ids
-let t   = try await board.queryTask(id: 1)         // read one back (bytes included)
+try await client.deleteTask(id: 1)
+try await client.resetTasks()                       // wipe all tasks
+let ids = try await client.queryAllTasks()          // [UInt8] of scheduled ids
+let t   = try await client.queryTask(id: 1)         // read one back (bytes included)
 ```
 
 `uploadTask` is sugar over the primitives, if you need them:
 
 ```swift
-try await board.createTask(id: 2, length: bytes.count)
-try await board.addToTask(id: 2, data: bytes)      // client splits into 48-byte chunks
-try await board.scheduleTask(id: 2, delay: .seconds(1))
+try await client.createTask(id: 2, length: bytes.count)
+try await client.addToTask(id: 2, data: bytes)      // client splits into 48-byte chunks
+try await client.scheduleTask(id: 2, delay: .seconds(1))
 ```
 
 **Tips**
@@ -390,7 +391,7 @@ Inside `uploadTask { board in … }`, `board` is a `FirmataTaskRecorder` with th
 live API — but they *record* instead of executing. The recorder is **synchronous** (no `await`).
 
 ```swift
-try await board.uploadTask(id: 3, repeatEvery: .seconds(1)) { board in
+try await client.uploadTask(id: 3, repeatEvery: .seconds(1)) { board in
     board.setPinMode(.pin(2), mode: .output)
     board.digitalWrite(pin: .pin(2), high: true)
     board.analogWrite(channel: .channel(2), value: 512)
@@ -506,7 +507,7 @@ the task repeats. Ideal for one-time setup inside a `repeatEvery` task (arming a
 a register):
 
 ```swift
-try await board.uploadTask(id: 4, repeatEvery: .milliseconds(200)) { board in
+try await client.uploadTask(id: 4, repeatEvery: .milliseconds(200)) { board in
     board.once { b in
         b.irReceiveNEC(pin: .pin(18), into: .reg(0))   // arm the receiver exactly once
         b.setRegister(.reg(1), to: .number(0))          // seed a counter once
@@ -584,7 +585,7 @@ an offline gadget. `httpGet`/`httpPost` return a `TaskHTTPResponse` (a status re
 handle); the `json` ops read fields from that body.
 
 ```swift
-try await board.uploadTask(id: 5, repeatEvery: .minutes(10)) { board in
+try await client.uploadTask(id: 5, repeatEvery: .minutes(10)) { board in
     let res = board.httpGet("http://api.example.com/weather", statusInto: .reg(0))
 
     // Numbers (optionally scaled to keep decimals as an int), floats, strings, structure:
@@ -654,7 +655,7 @@ board.string.free(s)
 A task can upload and schedule **another** task, with no host involved:
 
 ```swift
-try await board.uploadTask(id: 6) { parent in
+try await client.uploadTask(id: 6) { parent in
     parent.addTask(id: 7, repeatEvery: .milliseconds(500)) { child in
         child.digitalWrite(pin: .pin(2), high: true)
         child.delay(.milliseconds(250))
@@ -677,13 +678,13 @@ try await board.uploadTask(id: 6) { parent in
 Push a string from a task to whatever host is connected, and read the board's memory:
 
 ```swift
-try await board.uploadTask(id: 8, repeatEvery: .seconds(5)) { board in
+try await client.uploadTask(id: 8, repeatEvery: .seconds(5)) { board in
     board.sendString("still alive")                       // → messages stream, .stringData
     board.heapStats(freeInto: .reg(0), largestInto: .reg(1))
 }
 ```
 
-Live, `sendString` exists too (`try await board.sendString("hi")`), arriving as `.stringData` on
+Live, `sendString` exists too (`try await client.sendString("hi")`), arriving as `.stringData` on
 the [messages stream](#2-the-messages-stream).
 
 **Tips**
@@ -728,11 +729,11 @@ Optional hardware subsystems sit behind two generic primitives; each vendored pa
 calls on top. **Always check presence first.**
 
 ```swift
-let mods = try await board.queryModules()                 // [ModuleInfo] — id, name, version
+let mods = try await client.queryModules()                 // [ModuleInfo] — id, name, version
 guard mods.contains(where: { $0.name == "ir" }) else { return }
 
 // Raw escape hatch (what the typed calls build on):
-try await board.sendToModule(id: 0x01, payload: [0x00, 4]) // configure IR TX on pin 4
+try await client.sendToModule(id: 0x01, payload: [0x00, 4]) // configure IR TX on pin 4
 ```
 
 Task-side, the same primitive is `moduleOp(id:payload:)`. Module packages wrap both.
@@ -761,17 +762,17 @@ Coolix (Midea-family AC), plus raw timing replay and two learning tools. Module 
 ### Transmit (live and task)
 
 ```swift
-try await board.irConfigureTransmit(pin: .pin(4))       // once
-try await board.irSendNEC(0x20DF10EF)                    // 38 kHz
-try await board.irSendRC6(0x0C)                          // 36 kHz — e.g. TV power
-try await board.irSendCoolix(0xB27BE0)                   // 38 kHz — AC off
-try await board.irSendRaw(carrierHz: 38_000, durations: [9000, 4500, /* … */])
+try await client.irConfigureTransmit(pin: .pin(4))       // once
+try await client.irSendNEC(0x20DF10EF)                    // 38 kHz
+try await client.irSendRC6(0x0C)                          // 36 kHz — e.g. TV power
+try await client.irSendCoolix(0xB27BE0)                   // 38 kHz — AC off
+try await client.irSendRaw(carrierHz: 38_000, durations: [9000, 4500, /* … */])
 ```
 
 All sends are **single-frame**. To repeat a key, wrap the send in a task `repeat` ([§16](#16-repeat--once)):
 
 ```swift
-try await board.uploadTask(id: 1) { board in
+try await client.uploadTask(id: 1) { board in
     board.irConfigureTransmit(pin: .pin(4))
     board.`repeat`(times: 4, gap: .milliseconds(40)) { $0.irSendNEC(0x20DF10EF) }
 }
@@ -791,11 +792,11 @@ board.irSendCoolix(fromRegister: .reg(0))
 Three protocol decoders, all sharing one raw RMT capture underneath:
 
 ```swift
-try await board.irReceiveNEC(pin: .pin(18), into: 0)     // R0 ← decoded frame; also on messages
-try await board.irReceiveRC6(pin: .pin(18), into: 0)     // values include mode+toggle bits
-try await board.irReceiveCoolix(pin: .pin(18), into: 0)  // folded 24-bit code
+try await client.irReceiveNEC(pin: .pin(18), into: 0)     // R0 ← decoded frame; also on messages
+try await client.irReceiveRC6(pin: .pin(18), into: 0)     // values include mode+toggle bits
+try await client.irReceiveCoolix(pin: .pin(18), into: 0)  // folded 24-bit code
 
-for await m in await board.messages {
+for await m in await client.messages {
     if let code = m.irCode { print(String(code, radix: 16)) }
 }
 ```
@@ -803,7 +804,7 @@ for await m in await board.messages {
 Task-side — **arm inside `once { }`** so a repeating task doesn't reset the receiver each pass:
 
 ```swift
-try await board.uploadTask(id: 2, repeatEvery: .milliseconds(100)) { board in
+try await client.uploadTask(id: 2, repeatEvery: .milliseconds(100)) { board in
     board.once { $0.irReceiveNEC(pin: .pin(18), into: .reg(0)) }
     board.ifTrue(.reg(0), .equal, .number(0x20DF10EF),
                  then: { $0.digitalWrite(pin: .pin(2), high: true) })
@@ -816,14 +817,14 @@ Two tools when you don't know the protocol:
 
 ```swift
 // (a) Sniff to the host as raw timings (firmware 2.17+):
-try await board.irStartRawCapture(pin: .pin(18))
-for await m in await board.messages {
+try await client.irStartRawCapture(pin: .pin(18))
+for await m in await client.messages {
     if let frame = m.irRawFrame { print(frame.durations) }   // learn, then replay via irSendRaw
 }
-try await board.irStopRawCapture()
+try await client.irStopRawCapture()
 
 // (b) Capture raw timings as TEXT into a device string (firmware 2.18+) — print it on an OLED:
-try await board.uploadTask(id: 3, repeatEvery: .milliseconds(200)) { board in
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(200)) { board in
     let s = board.string.reserveString(into: TaskStringSlot(0))     // reserve, don't createString
     board.once { $0.irReceiveRawText(pin: .pin(18), into: s) }       // writes "[d0,d1,…]"
     board.displayPrint(s, line: 0)                                   // read it right off the glass
@@ -850,17 +851,17 @@ an integer register in **centimetres** (`-1` = no echo). Module id `0x02`. That 
 makes it task-native — a task reads it and reacts with nobody connected.
 
 ```swift
-try await board.sonarConfigure(trigger: .pin(5), echo: .pin(18))
-try await board.sonarPing(into: 0)                        // one ping → R0 = cm
-try await board.sonarAutoPing(into: 0, every: .milliseconds(200)) // firmware pings itself
-print(try await board.queryRegisters().ints[0])           // read live
-try await board.sonarAutoPing(into: 0, every: .zero)      // stop
+try await client.sonarConfigure(trigger: .pin(5), echo: .pin(18))
+try await client.sonarPing(into: 0)                        // one ping → R0 = cm
+try await client.sonarAutoPing(into: 0, every: .milliseconds(200)) // firmware pings itself
+print(try await client.queryRegisters().ints[0])           // read live
+try await client.sonarAutoPing(into: 0, every: .zero)      // stop
 ```
 
 A presence detector that runs offline:
 
 ```swift
-try await board.uploadTask(id: 1, repeatEvery: .milliseconds(200)) { board in
+try await client.uploadTask(id: 1, repeatEvery: .milliseconds(200)) { board in
     board.once { $0.sonarAutoPing(into: .reg(0), every: .milliseconds(150)) }
     board.ifTrue(.reg(0), .lessThan, .number(20),
                  then:   { $0.digitalWrite(pin: .pin(2), high: true) },
@@ -886,19 +887,19 @@ registers** (°C / %RH) plus an integer ok-flag. The firmware auto-reads on the 
 once configured. Module id `0x03`.
 
 ```swift
-try await board.dhtConfigure(pin: .pin(4), type: .dht22,
+try await client.dhtConfigure(pin: .pin(4), type: .dht22,
                              temperatureInto: 0,     // F0 = °C
                              humidityInto: 1,        // F1 = %RH
                              statusInto: 0)          // R0 = 1 ok / 0 failed read
-try await board.dhtReadNow()                          // don't wait out the 2 s cadence
-let snap = try await board.queryRegisters()
+try await client.dhtReadNow()                          // don't wait out the 2 s cadence
+let snap = try await client.queryRegisters()
 print(snap.floats[0], snap.floats[1], snap.ints[0])
 ```
 
 An offline thermostat:
 
 ```swift
-try await board.uploadTask(id: 1, repeatEvery: .seconds(2)) { board in
+try await client.uploadTask(id: 1, repeatEvery: .seconds(2)) { board in
     board.once {
         $0.dhtConfigure(pin: .pin(4), type: .dht22,
                         temperatureInto: .freg(0), humidityInto: .freg(1), statusInto: .reg(0))
@@ -927,25 +928,25 @@ task can fetch → extract → display. Every print pads to the end of the line,
 never leaves ghosts. Module id `0x04`.
 
 ```swift
-try await board.displayConfigure(address: 0x3C, kind: .ssd1306)  // once; .sh1106 if edges are off
-try await board.displayClear()
-try await board.displayPrint("Hello", line: 0)
-try await board.displayPrint("temp:", line: 1)
-try await board.displayPrint(register: 0, line: 1, col: 6)       // R0 as decimal
-try await board.displayPrint(floatRegister: 0, line: 2)          // F0 with 2 decimals
+try await client.displayConfigure(address: 0x3C, kind: .ssd1306)  // once; .sh1106 if edges are off
+try await client.displayClear()
+try await client.displayPrint("Hello", line: 0)
+try await client.displayPrint("temp:", line: 1)
+try await client.displayPrint(register: 0, line: 1, col: 6)       // R0 as decimal
+try await client.displayPrint(floatRegister: 0, line: 2)          // F0 with 2 decimals
 ```
 
 Fonts: the default **5×7** gives 8 lines × **21 columns**; the compact **4×6** (`smallFont: true`)
 gives 8 lines × **25 columns** — more text per line:
 
 ```swift
-try await board.displayConfigure(kind: .ssd1306, smallFont: true)
+try await client.displayConfigure(kind: .ssd1306, smallFont: true)
 ```
 
 The task payoff — fetch a value and show it, no host:
 
 ```swift
-try await board.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
+try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
     board.once { $0.displayConfigure(kind: .ssd1306) }
     let res = board.httpGet("http://api.example.com/weather", statusInto: .reg(0))
     let city = board.json.getString(res.body, "name")            // TaskString
