@@ -24,7 +24,7 @@ Both firmwares speak the identical wire protocol — use whichever toolchain you
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.2.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "16.3.0")
 ```
 
 Pair with firmware **2.18+** for everything below (the core works on 2.15+).
@@ -111,13 +111,15 @@ survive disconnects and live in RAM until deleted or reboot. Every recipe is in 
 
 ## Modules
 
-Optional hardware subsystems sit behind two generic primitives — `queryModules()` to
-discover what the connected firmware has, and `sendToModule(id:payload:)` /
-`FirmataTaskRecorder.moduleOp(id:payload:)` to talk to one. Each module ships as its
-own package that depends on this one, adding typed extensions — import only what you need.
+Optional hardware subsystems sit behind generic primitives — `queryModules()` to
+discover what the connected firmware has, `sendToModule(id:payload:)` /
+`FirmataTaskRecorder.moduleOp(id:payload:)` to talk to one, and
+`sendToModuleAwaitingReply(id:payload:)` for request/reply ops (e.g. a one-shot sensor
+read that answers directly). Each module ships as its own package that depends on this
+one, adding typed extensions — import only what you need.
 
 ```swift
-guard try await board.queryModules().contains(where: { $0.name == "ir" }) else { return }
+guard try await client.queryModules().contains(where: { $0.name == "ir" }) else { return }
 ```
 
 | ID | Module | Purpose | Package |
@@ -129,7 +131,7 @@ guard try await board.queryModules().contains(where: { $0.name == "ir" }) else {
 
 ## Testing
 
-`swift test` — 127 tests, no hardware needed: a `MockTransport` plays the board
+`swift test` — 135 tests, no hardware needed: a `MockTransport` plays the board
 (including the provisioning-crypto round-trip), and the recorder's byte output is
 golden-tested against captures verified on real hardware.
 

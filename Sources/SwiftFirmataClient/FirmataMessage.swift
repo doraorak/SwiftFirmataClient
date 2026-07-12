@@ -61,6 +61,24 @@ public enum FirmataMessage: Sendable {
     case unknownSysEx(id: UInt8, data: [UInt8])
 }
 
+// MARK: - Module message namespace
+
+public extension FirmataMessage {
+    /// Namespace for module-specific decoders. `FirmataMessage`'s own surface stays
+    /// module-agnostic (only the generic ``moduleEvent(id:payload:)`` case); each module
+    /// package adds a property under here — e.g. `SwiftFirmataIR` adds `.ir`, so you read
+    /// `message.module.ir.code` instead of the message type carrying per-module fields.
+    var module: ModuleMessage { ModuleMessage(self) }
+}
+
+/// Carries a ``FirmataMessage`` for module-specific decoding. Reached via
+/// ``FirmataMessage/module``; module packages extend it with their own sub-namespace.
+public struct ModuleMessage: Sendable {
+    /// The underlying message being decoded.
+    public let message: FirmataMessage
+    public init(_ message: FirmataMessage) { self.message = message }
+}
+
 // MARK: - Associated value types
 
 public struct ProtocolVersion: Sendable, CustomStringConvertible {

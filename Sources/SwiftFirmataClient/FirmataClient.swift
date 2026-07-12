@@ -1,6 +1,16 @@
 import Foundation
 import CryptoKit
 
+/// Errors thrown by ``FirmataClient`` calls.
+public enum FirmataError: Error, Sendable {
+    case transportClosed
+    case invalidData
+    case noResponse
+    /// Wi-Fi provisioning: the device rejected the credentials (the encrypted
+    /// handshake failed to authenticate — wrong key / tampered / corrupted frame).
+    case wifiCredentialsRejected
+}
+
 /// Why a ``FirmataClient`` connection ended.
 public enum FirmataDisconnectReason: Sendable, Equatable {
     /// ``FirmataClient/disconnect()`` was called locally.
@@ -79,6 +89,12 @@ public actor FirmataClient {
     private var pendingRegisters:  CheckedContinuation<RegisterSnapshot, Error>?
     private var registersSeq = 0
     private var pendingModules:    CheckedContinuation<[ModuleInfo], Error>?
+
+    // Module request/reply (one-shot reads): a module op that answers with a
+    // `moduleEvent` from the same id. Keyed by module id, FIFO per module, each
+    // entry tagged with a seq so a timeout cancels the exact waiter.
+    private var moduleReplySeq: UInt64 = 0
+    private var pendingModuleReply: [UInt8: [(seq: UInt64, cont: CheckedContinuation<[UInt8], Error>)]] = [:]
     private var modulesSeq = 0
     private var pendingWiFiKey:    CheckedContinuation<[UInt8],      Error>?
     private var pendingWiFiStatus: CheckedContinuation<(Int, String), Error>?
@@ -214,6 +230,16 @@ public actor FirmataClient {
                     .resume(returning: HTTPResponse(status: status, body: body))
             }
 
+        case .moduleEvent(let id, let payload):
+            // If a one-shot module read is awaiting this module's reply, resolve the
+            // oldest waiter. (Also still yielded on `messages` above for spontaneous
+            // events like IR received frames.)
+            if var queue = pendingModuleReply[id], !queue.isEmpty {
+                let waiter = queue.removeFirst()
+                pendingModuleReply[id] = queue.isEmpty ? nil : queue
+                waiter.cont.resume(returning: payload)
+            }
+
         case .unknownSysEx(let id, let data) where id == WiFiCfg.command:
             handleWiFiConfigReply(data)
 
@@ -242,6 +268,8 @@ public actor FirmataClient {
         pendingAnalogRead.removeAll()
         for cont in pendingHttp.values { cont.resume(throwing: error) }
         pendingHttp.removeAll()
+        for queue in pendingModuleReply.values { for w in queue { w.cont.resume(throwing: error) } }
+        pendingModuleReply.removeAll()
         pop(&pendingWiFiKey)?.resume(throwing: error)
         pop(&pendingWiFiStatus)?.resume(throwing: error)
         for task in inFlightTasks.values { task.cancel() }
@@ -691,6 +719,44 @@ public actor FirmataClient {
         guard (0x01...0x7E).contains(id) else { throw FirmataError.invalidData }
         try await transport.send([Cmd.startSysEx, SysEx.moduleData, id]
                                  + payload.map { $0 & 0x7F } + [Cmd.endSysEx])
+    }
+
+    /// Send a payload to module `id` and await its next reply event, returning that
+    /// event's raw payload. For request/reply module ops (e.g. a one-shot sensor
+    /// read) — the module answers with a single ``FirmataMessage/moduleEvent(id:payload:)``.
+    /// Used by module packages; don't mix with a module that also streams unsolicited
+    /// events on the same id. Throws ``FirmataError/noResponse`` on timeout.
+    public func sendToModuleAwaitingReply(id: UInt8, payload: [UInt8],
+                                          timeout: Duration = .seconds(2)) async throws -> [UInt8] {
+        guard (0x01...0x7E).contains(id) else { throw FirmataError.invalidData }
+        let seq = moduleReplySeq; moduleReplySeq &+= 1
+        let bytes: [UInt8] = [Cmd.startSysEx, SysEx.moduleData, id] + payload.map { $0 & 0x7F } + [Cmd.endSysEx]
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingModuleReply[id, default: []].append((seq, continuation))
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do {
+                    try await self.transport.send(bytes)
+                } catch {
+                    self.failModuleReply(id: id, seq: seq, error: error)
+                    self.clearInFlight(token)
+                    return
+                }
+                try? await Task.sleep(for: timeout)
+                self.failModuleReply(id: id, seq: seq, error: FirmataError.noResponse)
+                self.clearInFlight(token)
+            }
+        }
+    }
+
+    /// Resume a still-pending module-reply waiter (by id+seq) with an error; a no-op
+    /// if the reply already arrived and removed it.
+    private func failModuleReply(id: UInt8, seq: UInt64, error: Error) {
+        guard var queue = pendingModuleReply[id],
+              let idx = queue.firstIndex(where: { $0.seq == seq }) else { return }
+        let waiter = queue.remove(at: idx)
+        pendingModuleReply[id] = queue.isEmpty ? nil : queue
+        waiter.cont.resume(throwing: error)
     }
 
     // MARK: - Registers & servo (firmware 2.8+)

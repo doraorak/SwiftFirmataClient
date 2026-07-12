@@ -12,8 +12,8 @@ Display). Each section is self-contained: a short "what it is", runnable snippet
 
 > **Firmware floor.** The core works on firmware **2.15+**. Feature minimums: modules **2.16+**,
 > raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the **4096-byte task
-> budget 2.19+** (older firmware caps a single task at 512 bytes). `queryFirmware()` tells you
-> what's running.
+> budget 2.19+** (older firmware caps a single task at 512 bytes), one-shot sonar/dht reads
+> **2.20+** (sonar/dht module 1.1). `queryFirmware()` / `queryModules()` tell you what's running.
 
 ---
 
@@ -100,7 +100,7 @@ Task {
 Module packages add typed accessors on `FirmataMessage` so you never hand-decode a payload:
 
 ```swift
-if let code = message.irCode { print("IR frame: \(String(code, radix: 16))") }
+if let code = message.module.ir.code { print("IR frame: \(String(code, radix: 16))") }
 ```
 
 **Tips**
@@ -736,7 +736,9 @@ guard mods.contains(where: { $0.name == "ir" }) else { return }
 try await client.sendToModule(id: 0x01, payload: [0x00, 4]) // configure IR TX on pin 4
 ```
 
-Task-side, the same primitive is `moduleOp(id:payload:)`. Module packages wrap both.
+Task-side, the same primitive is `moduleOp(id:payload:)`. Module packages wrap both. For
+request/reply ops (a one-shot read that answers directly, like `sonarRead()`),
+`sendToModuleAwaitingReply(id:payload:)` sends and awaits the module's reply event.
 
 | ID | Module | Feeds | Package |
 |----|--------|-------|---------|
@@ -797,7 +799,7 @@ try await client.irReceiveRC6(pin: .pin(18), into: 0)     // values include mode
 try await client.irReceiveCoolix(pin: .pin(18), into: 0)  // folded 24-bit code
 
 for await m in await client.messages {
-    if let code = m.irCode { print(String(code, radix: 16)) }
+    if let code = m.module.ir.code { print(String(code, radix: 16)) }
 }
 ```
 
@@ -819,7 +821,7 @@ Two tools when you don't know the protocol:
 // (a) Sniff to the host as raw timings (firmware 2.17+):
 try await client.irStartRawCapture(pin: .pin(18))
 for await m in await client.messages {
-    if let frame = m.irRawFrame { print(frame.durations) }   // learn, then replay via irSendRaw
+    if let frame = m.module.ir.rawFrame { print(frame.durations) }   // learn, then replay via irSendRaw
 }
 try await client.irStopRawCapture()
 
@@ -852,7 +854,11 @@ makes it task-native — a task reads it and reacts with nobody connected.
 
 ```swift
 try await client.sonarConfigure(trigger: .pin(5), echo: .pin(18))
-try await client.sonarPing(into: 0)                        // one ping → R0 = cm
+
+let cm = try await client.sonarRead()                      // one-shot: pings, returns cm directly
+                                                           // (-1 = no echo); no register touched
+
+try await client.sonarPing(into: 0)                        // one ping → R0 = cm (register form)
 try await client.sonarAutoPing(into: 0, every: .milliseconds(200)) // firmware pings itself
 print(try await client.queryRegisters().ints[0])           // read live
 try await client.sonarAutoPing(into: 0, every: .zero)      // stop
@@ -891,7 +897,10 @@ try await client.dhtConfigure(pin: .pin(4), type: .dht22,
                              temperatureInto: 0,     // F0 = °C
                              humidityInto: 1,        // F1 = %RH
                              statusInto: 0)          // R0 = 1 ok / 0 failed read
-try await client.dhtReadNow()                          // don't wait out the 2 s cadence
+let t = try await client.dhtReadTemperature()          // one-shot: reads, returns °C directly
+let h = try await client.dhtReadHumidity()             // %RH (throws if the sensor read fails — retry)
+
+try await client.dhtReadNow()                          // or: nudge the auto-read → registers
 let snap = try await client.queryRegisters()
 print(snap.floats[0], snap.floats[1], snap.ints[0])
 ```
@@ -1006,7 +1015,7 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 - `SchedulerTask` — a task read back via `queryTask(id:)` (`.id`, `.timeMs`, `.length`, `.position`, `.data`).
 
 **Modules** (each its own package)
-- IR `0x01` (SwiftFirmataIR): `irConfigureTransmit`, `irSendNEC/RC6/Coolix/Raw`, `irSend*(fromRegister:)`, `irReceiveNEC/RC6/Coolix`, `irReceiveRawText`, `irStartRawCapture`/`irStopRawCapture`; `FirmataMessage.irCode`/`.irRawFrame`.
-- Sonar `0x02` (SwiftFirmataSonar): `sonarConfigure`, `sonarPing`, `sonarAutoPing`.
-- DHT `0x03` (SwiftFirmataDHT): `dhtConfigure`, `dhtReadNow`; `DHTSensorType`.
+- IR `0x01` (SwiftFirmataIR): `irConfigureTransmit`, `irSendNEC/RC6/Coolix/Raw`, `irSend*(fromRegister:)`, `irReceiveNEC/RC6/Coolix`, `irReceiveRawText`, `irStartRawCapture`/`irStopRawCapture`; `message.module.ir.code`/`.rawFrame`.
+- Sonar `0x02` (SwiftFirmataSonar): `sonarConfigure`, `sonarRead` (one-shot → cm), `sonarPing`, `sonarAutoPing`.
+- DHT `0x03` (SwiftFirmataDHT): `dhtConfigure`, `dhtReadTemperature`/`dhtReadHumidity` (one-shot), `dhtReadNow`; `DHTSensorType`.
 - Display `0x04` (SwiftFirmataDisplay): `displayConfigure` (`DisplayKind`, `smallFont`), `displayClear`, `displayPrint` (text / register / float / `TaskString`).
