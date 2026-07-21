@@ -12,14 +12,11 @@ arrives on one `messages` `AsyncStream`.
 | Repo | Role |
 |---|---|
 | [SwiftFirmataClient](https://github.com/doraorak/SwiftFirmataClient) | This package — the host-side client (macOS 13+ / iOS 16+, Swift 6) |
-| [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) | Optional IR (infrared) add-on package |
-| [SwiftFirmataSonar](https://github.com/doraorak/SwiftFirmataSonar) | Optional HC-SR04/US-100 distance add-on |
-| [SwiftFirmataDHT](https://github.com/doraorak/SwiftFirmataDHT) | Optional DHT11/DHT22 climate add-on |
-| [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) | Optional SSD1306/SH1106 OLED add-on |
 | [ESP32FirmataSwift](https://github.com/doraorak/ESP32FirmataSwift) | ESP32 firmware in Embedded Swift (ESP-IDF) |
 | [ESP32Firmata](https://github.com/doraorak/ESP32Firmata) | The same firmware in C++ (Arduino) |
 
 Both firmwares speak the identical wire protocol — use whichever toolchain you prefer.
+Optional hardware add-on packages (IR, sonar, DHT, display, mic) are listed under [Modules](#modules).
 
 ## Install
 
@@ -128,6 +125,7 @@ guard try await client.queryModules().contains(where: { $0.name == "ir" }) else 
 | `0x02` | `sonar` | HC-SR04 / US-100 ultrasonic distance → register | [SwiftFirmataSonar](https://github.com/doraorak/SwiftFirmataSonar) |
 | `0x03` | `dht` | DHT11 / DHT22 temperature & humidity → float registers | [SwiftFirmataDHT](https://github.com/doraorak/SwiftFirmataDHT) |
 | `0x04` | `display` | SSD1306 / SH1106 OLED — text, registers, strings; 5×7 or compact 4×6 font | [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) |
+| `0x05` | `mic` | Sound level from an analog or **I²S MEMS** mic (INMP441) → dB/RMS registers; on-device dominant-frequency (FFT) → Hz | [SwiftFirmataMic](https://github.com/doraorak/SwiftFirmataMic) |
 
 ## Testing
 
