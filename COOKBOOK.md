@@ -1049,12 +1049,13 @@ let regs = try await client.queryRegisters()
 print(regs.floats[3], "Hz")                            // 0.0 ⇒ silence / broadband noise
 // …later: try await client.micDisableFrequency()
 
-// Fire when a ~1 kHz whistle is heard. Configure the I²S mic + frequency live first (the
-// recorder configures analog mics inside a task; I²S is configured host-side), then the task
-// just reacts to F3 with no host attached:
-try await client.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32), decibelsInto: 2, rmsInto: 3)
-try await client.micEnableFrequency(into: 3)
+// Fully host-free: configure the I²S mic + frequency inside the task, then fire when a
+// ~1 kHz whistle is heard — nothing attached (recorder `micConfigureI2S`/`micEnableFrequency`).
 try await client.uploadTask(id: 4, repeatEvery: .milliseconds(300)) { board in
+    board.once {
+        $0.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32), decibelsInto: .freg(2), rmsInto: .reg(3))
+        $0.micEnableFrequency(into: .freg(3))
+    }
     board.ifTrue(.freg(3), .greaterThan, .float(950),
                  then: { $0.digitalWrite(.pin(2), high: true) })
 }
