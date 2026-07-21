@@ -11,7 +11,7 @@ Display, Mic). Each section is self-contained: a short "what it is", runnable sn
 > assume `import SwiftFirmataClient` (plus the module package where relevant).
 
 > **Firmware floor.** The core works on firmware **2.15+**. Feature minimums: modules **2.16+**,
-> raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the mic module (RMS→dB) **2.22+** (digital I²S MEMS mic **2.23+**), the **4096-byte task
+> raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the mic module (RMS→dB) **2.22+** (digital I²S MEMS mic **2.23+**; settable I²S rate + dominant-frequency FFT **2.24+**), the **4096-byte task
 > budget 2.19+** (older firmware caps a single task at 512 bytes), one-shot sonar/dht reads
 > **2.20+** (sonar/dht module 1.1), `.tone` pin mode + `toneWrite` **2.21+**. `queryFirmware()` /
 > `queryModules()` tell you what's running.
@@ -1024,7 +1024,8 @@ pad reads as silence:
 
 ```swift
 try await client.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32),
-                                 decibelsInto: 2, rmsInto: 3)
+                                 decibelsInto: 2, rmsInto: 3,
+                                 sampleRate: 16_000)   // 8k–48k; firmware 2.24+ (else fixed 16 kHz)
 let db = try await client.micReadDecibels()
 
 // Diagnostic when a fresh INMP441 reads silence — is SD carrying anything at all?
@@ -1033,7 +1034,31 @@ let peak = try await client.micI2SPeakRaw()   // 0 ⇒ dead/unpowered mic or a w
 
 One-shot reads, `micSetCalibration`, and the loudness task below are identical — only the
 `configure` call differs. The I²S full-scale reference is 2²³ (24-bit MEMS) vs the ADC's 2048/√2,
-so re-calibrate after switching mics.
+so re-calibrate after switching mics. `sampleRate` is the on-device audio clock — 16 kHz is ample
+for a dB meter; raise it only for higher-frequency capture.
+
+**Dominant frequency (FFT)** — firmware **2.24+**, I²S only. The firmware Hann-windows + FFTs each
+window and writes the peak frequency in **Hz → `F[hz]`** (0 = no tone stands out). Resolution is
+`sampleRate / 512` (≈31 Hz at 16 kHz), refined by parabolic interpolation. Great for whistle / pitch
+/ single-tone triggers:
+
+```swift
+try await client.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32), decibelsInto: 2, rmsInto: 3)
+try await client.micEnableFrequency(into: 3)          // dominant Hz → F3 each window
+let regs = try await client.queryRegisters()
+print(regs.floats[3], "Hz")                            // 0.0 ⇒ silence / broadband noise
+// …later: try await client.micDisableFrequency()
+
+// Fire when a ~1 kHz whistle is heard. Configure the I²S mic + frequency live first (the
+// recorder configures analog mics inside a task; I²S is configured host-side), then the task
+// just reacts to F3 with no host attached:
+try await client.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32), decibelsInto: 2, rmsInto: 3)
+try await client.micEnableFrequency(into: 3)
+try await client.uploadTask(id: 4, repeatEvery: .milliseconds(300)) { board in
+    board.ifTrue(.freg(3), .greaterThan, .float(950),
+                 then: { $0.digitalWrite(.pin(2), high: true) })
+}
+```
 
 The task payoff — react to loudness with no host attached:
 
