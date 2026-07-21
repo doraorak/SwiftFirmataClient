@@ -13,7 +13,7 @@ import Network
  Usage:
  ```swift
  let transport = TCPTransport(host: "192.168.1.87")          // firmware default port 3030
- let transport = TCPTransport(host: "esp32-firmata.local")   // direct mDNS-name resolution
+ let transport = TCPTransport(host: "firmata-wifi-esp32.local")   // direct mDNS-name resolution
  let transport = TCPTransport(host: "127.0.0.1", port: 4030) // through an SSH tunnel
  ```
  */

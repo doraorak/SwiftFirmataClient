@@ -15,7 +15,7 @@
  Usage:
  ```swift
  let transport = BLETransport()                        // first NUS device found
- let transport = BLETransport(peripheralName: "Firmata-ESP32")  // filter by name
+ let transport = BLETransport(peripheralName: "Firmata-BLE-ESP32")  // filter by name
  ```
 
  Add `NSBluetoothAlwaysUsageDescription` to your Info.plist.

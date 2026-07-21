@@ -7,7 +7,7 @@ import Network
  On the ESP32 side (inside `setup()`, after WiFi connects):
  ```cpp
  #include <ESPmDNS.h>
- MDNS.begin("esp32-firmata");
+ MDNS.begin("firmata-wifi-esp32");
  MDNS.addService("firmata", "tcp", 3030);
  ```
 
@@ -83,7 +83,7 @@ public final class BonjourTransport: FirmataTransport, @unchecked Sendable {
                 browser.cancel()
 
                 /* Prefer a direct IP:port endpoint extracted from the TXT record.
-                   This bypasses mDNS A-record resolution for "esp32-firmata.local",
+                   This bypasses mDNS A-record resolution for "firmata-wifi-esp32.local",
                    which can time out on home networks that don't relay multicast DNS.
                    txt[key] returns Substring? on Network.framework; String() converts it. */
                 let endpoint: NWEndpoint = {

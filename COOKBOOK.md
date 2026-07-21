@@ -1,8 +1,8 @@
 # SwiftFirmataClient Cookbook
 
 Task-oriented recipes for every feature in the suite — the host-side `FirmataClient`,
-the on-device task recorder, and all four vendored hardware modules (IR, Sonar, DHT,
-Display). Each section is self-contained: a short "what it is", runnable snippets, and a
+the on-device task recorder, and all five vendored hardware modules (IR, Sonar, DHT,
+Display, Mic). Each section is self-contained: a short "what it is", runnable snippets, and a
 **Tips** / **Caveats** block where the sharp edges live.
 
 > **Conventions.** `client` is a connected `FirmataClient`; inside `uploadTask { board in … }`,
@@ -11,7 +11,7 @@ Display). Each section is self-contained: a short "what it is", runnable snippet
 > assume `import SwiftFirmataClient` (plus the module package where relevant).
 
 > **Firmware floor.** The core works on firmware **2.15+**. Feature minimums: modules **2.16+**,
-> raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the **4096-byte task
+> raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the mic module (RMS→dB) **2.22+** (digital I²S MEMS mic **2.23+**), the **4096-byte task
 > budget 2.19+** (older firmware caps a single task at 512 bytes), one-shot sonar/dht reads
 > **2.20+** (sonar/dht module 1.1), `.tone` pin mode + `toneWrite` **2.21+**. `queryFirmware()` /
 > `queryModules()` tell you what's running.
@@ -38,10 +38,10 @@ Display). Each section is self-contained: a short "what it is", runnable snippet
 **Extending & modules**
 23. [Custom transports](#23-custom-transports) · 24. [Modules — discovery & the generic primitive](#24-modules--discovery--the-generic-primitive) ·
 25. [IR module](#25-ir-module) · 26. [Sonar module](#26-sonar-module) · 27. [DHT module](#27-dht-module) ·
-28. [Display module](#28-display-module)
+28. [Display module](#28-display-module) · 29. [Mic module](#29-mic-module)
 
 **Reference**
-29. [Global caveats & gotchas](#29-global-caveats--gotchas) · 30. [Type reference](#30-type-reference)
+30. [Global caveats & gotchas](#30-global-caveats--gotchas) · 31. [Type reference](#31-type-reference)
 
 ---
 
@@ -987,7 +987,82 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 
 ---
 
-## 29. Global caveats & gotchas
+## 29. Mic module
+
+`import SwiftFirmataMic`. Sound level from an analog microphone (module id `0x05`, firmware
+**2.22+**). The host's sampling stream is ~10 Hz — useless for audio — so the firmware
+burst-samples the ADC on-device each window (~16 ms at a few kHz), computes the DC-removed RMS,
+converts to decibels, and writes **dB → `F[db]`** and **raw RMS counts → `R[rms]`** every window
+(default 250 ms, minimum 50).
+
+```swift
+import SwiftFirmataClient
+import SwiftFirmataMic
+
+guard try await client.hasMicModule() else { return }
+try await client.micConfigure(pin: .pin(32), decibelsInto: 2, rmsInto: 3)
+
+let db = try await client.micReadDecibels()        // one-shot: measure now, reply directly
+
+let regs = try await client.queryRegisters()       // …or poll the auto-refreshed registers
+print(regs.floats[2], "dB", regs.ints[3], "rms")
+```
+
+dB is **relative full-scale** (full-scale sine ≈ 0 dB; silence on an unamplified electret ≈ −45)
+until a one-point calibration — hold any SPL meter (phone app) next to the mic once:
+
+```swift
+let offset = referenceDb - (try await client.micReadDecibels())
+try await client.micSetCalibration(offset: offset)  // firmware adds it to every reading
+```
+
+**Digital I²S MEMS mic (INMP441 / SPH0645)** — firmware **2.23+**. Same module, same dB/RMS
+outputs, but read over I²S instead of the ADC: no analog noise floor and true audio-rate sampling
+(16 kHz on-device). Wire SCK→`bclk`, WS→`ws`, SD→`data`, **L/R→GND** (left slot), VDD→**3V3**
+(keep ≤ 3.6 V — over-volting kills the mic). Solder the header — a jumper poked into an unsoldered
+pad reads as silence:
+
+```swift
+try await client.micConfigureI2S(bclk: .pin(14), ws: .pin(27), data: .pin(32),
+                                 decibelsInto: 2, rmsInto: 3)
+let db = try await client.micReadDecibels()
+
+// Diagnostic when a fresh INMP441 reads silence — is SD carrying anything at all?
+let peak = try await client.micI2SPeakRaw()   // 0 ⇒ dead/unpowered mic or a wiring/solder fault
+```
+
+One-shot reads, `micSetCalibration`, and the loudness task below are identical — only the
+`configure` call differs. The I²S full-scale reference is 2²³ (24-bit MEMS) vs the ADC's 2048/√2,
+so re-calibrate after switching mics.
+
+The task payoff — react to loudness with no host attached:
+
+```swift
+try await client.uploadTask(id: 3, repeatEvery: .milliseconds(500)) { board in
+    board.once { $0.micConfigure(pin: .pin(32), decibelsInto: .freg(2), rmsInto: .reg(3)) }
+    board.ifTrue(.freg(2), .greaterThan, .float(60),
+                 then: { $0.displayPrint("LOUD", line: 0) })
+}
+```
+
+**Tips**
+- Any **ADC1** pin (GPIO 32–39 on a classic ESP32); ADC2 fights Wi-Fi.
+- An unamplified electret barely clears the ESP32's ADC noise floor — great for clap/loud
+  detection; for a real level meter use an amplified mic (MAX9814), same module unchanged.
+- Comparator-output "sound sensor" boards read **binary** here (~floor or ~80+, nothing between):
+  a rail-to-rail square wave at 1 % duty already has a huge RMS. Perfect as a loud/quiet trigger —
+  the board's pot is the acoustic threshold.
+
+**Caveats**
+- A window's burst blocks the firmware loop ~16 ms — same class as a sonar ping; harmless at
+  tick cadence, but don't ask for a 50 ms window *and* expect µs-tight servo sweeps in a task.
+- The calibration offset survives SYSTEM_RESET but not a power cycle — store it host-side and
+  re-send after `micConfigure`.
+- `micReadDecibels()` needs a prior `micConfigure` (throws `invalidData` otherwise).
+
+---
+
+## 30. Global caveats & gotchas
 
 - **Everything is RAM.** Registers and tasks survive disconnects but **not reboot**; re-upload on reconnect if you need them to persist. Wi-Fi credentials are the exception (stored in flash).
 - **One master, latest wins.** A second client evicts the first (`EVICTED`, stream ends). Don't run two clients against one board expecting both to work.
@@ -1000,7 +1075,7 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 
 ---
 
-## 30. Type reference
+## 31. Type reference
 
 **Live values**
 - `FirmataPin` — `.pin(n)`; `FirmataChannel` — `.channel(n)`.
