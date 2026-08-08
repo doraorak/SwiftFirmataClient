@@ -10,11 +10,14 @@ Display, Mic). Each section is self-contained: a short "what it is", runnable sn
 > Pins and channels are typed — pass `.pin(n)` / `.channel(n)`, never a bare integer. Snippets
 > assume `import SwiftFirmataClient` (plus the module package where relevant).
 
-> **Firmware floor.** The core works on firmware **2.15+**. Feature minimums: modules **2.16+**,
-> raw-capture sniff & `once { }` **2.17+**, IR raw-text capture **2.18+**, the mic module (RMS→dB) **2.22+** (digital I²S MEMS mic **2.23+**; settable I²S rate + dominant-frequency FFT **2.24+**), the **4096-byte task
-> budget 2.19+** (older firmware caps a single task at 512 bytes), one-shot sonar/dht reads
-> **2.20+** (sonar/dht module 1.1), `.tone` pin mode + `toneWrite` **2.21+**. `queryFirmware()` /
-> `queryModules()` tell you what's running.
+> **Firmware floor.** The core — including the module subsystem — works on firmware **2.15+**.
+> Feature minimums: sonar/DHT/display modules, the ESP32 pin modes and raw-capture sniff & `once { }`
+> **2.17+**, IR raw-text capture **2.18+**, the **4096-byte task budget 2.19+** (older firmware caps a
+> single task at 512 bytes), one-shot sonar/dht reads **2.20+** (sonar/dht module 1.1), `.tone` pin
+> mode + `toneWrite` **2.21+**, the mic module **2.23+** (settable I²S rate + dominant-frequency FFT
+> **2.24+**), display pixels/bitmap slots and raw memory **2.27+**. These are *released* versions —
+> `queryFirmware()` can only ever report a tagged one. `queryFirmware()` / `queryModules()` tell you
+> what's running.
 
 ---
 
@@ -147,7 +150,7 @@ try await client.writeDigitalPort(0, pinMask: 0b0000_1010)   // set pins 1 & 3 o
 
 ## 4. Pin modes, PWM, tone, DAC
 
-`PinMode` is the full Firmata set plus three ESP32 extensions (firmware 2.16+):
+`PinMode` is the full Firmata set plus three ESP32 extensions (firmware 2.17+):
 
 | Mode | Use |
 |---|---|
@@ -249,7 +252,7 @@ let mods = try await client.queryModules()            // what hardware modules a
 
 **Tips**
 - `queryCapabilities()` is the ground truth for "can this pin do PWM/servo/analog?" — use it before assuming a pinout.
-- Gate every module and every 2.16+/2.17+/2.18+/2.19+ feature on `queryFirmware()` / `queryModules()`.
+- Gate every module and every 2.17+/2.18+/2.19+ feature on `queryFirmware()` / `queryModules()`.
 
 ---
 
@@ -810,7 +813,7 @@ request/reply ops (a one-shot read that answers directly, like `sonarRead()`),
 - Modules and tasks meet at **registers**: a module writes a register, a task reads it. That's the whole offline-reactivity story.
 
 **Caveats**
-- Modules require firmware 2.16+ (IR is older, 2.9+). A module absent from `queryModules()` isn't in that firmware build.
+- The module subsystem is 2.15+ and IR is older still (2.9+); the sonar, DHT and display modules arrived in 2.17, the mic in 2.23. A module absent from `queryModules()` isn't in that firmware build.
 
 ---
 
@@ -1029,7 +1032,7 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 - Each print is independent and self-padding, so you can refresh one line without clearing the panel.
 - `displayPrint(_ string: TaskString)` is the bridge from JSON / IR-text capture to the glass.
 
-### Pixels and bitmap slots (firmware 2.25+ / 2.26+)
+### Pixels and bitmap slots (firmware 2.27+)
 
 Beyond text, the panel takes individual pixels and whole frames. A frame is row-major
 `pixels[y * 128 + x]`, 128×64 — `FirmataDisplay.size` if you'd rather not hard-code it.
@@ -1074,7 +1077,7 @@ filled **before** the task that references them is uploaded.
 ## 29. Mic module
 
 `import SwiftFirmataMic`. Sound level from an analog microphone (module id `0x05`, firmware
-**2.22+**). The host's sampling stream is ~10 Hz — useless for audio — so the firmware
+**2.23+**). The host's sampling stream is ~10 Hz — useless for audio — so the firmware
 burst-samples the ADC on-device each window (~16 ms at a few kHz), computes the DC-removed RMS,
 converts to decibels, and writes **dB → `F[db]`** and **raw RMS counts → `R[rms]`** every window
 (default 250 ms, minimum 50).
@@ -1176,7 +1179,7 @@ try await client.uploadTask(id: 3, repeatEvery: .milliseconds(500)) { board in
 
 - **Everything is RAM.** Registers and tasks survive disconnects but **not reboot**; re-upload on reconnect if you need them to persist. Wi-Fi credentials are the exception (stored in flash).
 - **One master, latest wins.** A second client evicts the first (`EVICTED`, stream ends). Don't run two clients against one board expecting both to work.
-- **Gate on version.** `queryFirmware()` + `queryModules()` before anything past the 2.15 core. Floors: 2.16 modules, 2.17 sniff/`once`, 2.18 IR raw-text, **2.19 the 4096-byte task budget**.
+- **Gate on version.** `queryFirmware()` + `queryModules()` before anything past the 2.15 core. Floors: 2.17 sonar/DHT/display + sniff/`once`, 2.18 IR raw-text, **2.19 the 4096-byte task budget**, 2.23 mic, 2.27 display graphics + raw memory.
 - **Task budget.** 4096 bytes/task on 2.19+ (512 before). Big offenders: long literal strings, many JSON paths, embedded child tasks. Overflowing uploads throw.
 - **The recorder is synchronous and write-only.** It can't return a value to your Swift code — results go to registers; read them with `queryRegisters()` or show them on a display.
 - **Public vs internal registers.** You address R0–15 / F0–7. Op results auto-allocate R16–31 / F8–15 so they never trample your public state.
