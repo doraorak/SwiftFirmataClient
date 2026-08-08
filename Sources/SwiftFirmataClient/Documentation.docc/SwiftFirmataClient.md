@@ -66,6 +66,17 @@ required firmware versions; the repository COOKBOOK has a recipe per feature.
 - ``HTTPResponse``
 - ``WiFiStatus``
 
+### Raw memory
+
+Firmware 2.27+. Reads are range-checked on the device, so browsing arbitrary
+addresses is safe; writes go straight into live RAM and can crash the board.
+
+- ``MemoryInfo``
+- ``FirmataClient/queryMemoryInfo(timeout:)``
+- ``FirmataClient/readMemory(at:count:timeout:)``
+- ``FirmataClient/writeMemory(at:bytes:)``
+- ``FirmataClient/memoryChunkLimit``
+
 ### Tasks
 
 - ``FirmataTaskRecorder``

@@ -21,10 +21,27 @@ Optional hardware add-on packages (IR, sonar, DHT, display, mic) are listed unde
 ## Install
 
 ```swift
-.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "17.0.0")
+.package(url: "https://github.com/doraorak/SwiftFirmataClient.git", from: "18.0.0")
 ```
 
-Pair with firmware **2.18+** for everything below (the core works on 2.15+).
+Pair with firmware **2.27+** for everything below (the core works on 2.15+).
+
+### Firmware compatibility
+
+Both firmwares report the same `FIRMWARE_MAJOR.MINOR` — `queryFirmware()` tells you what a
+board can do. Anything newer than the board's version fails at the wire, not at compile time.
+
+| Firmware | Adds |
+|---|---|
+| **2.15** | Core: 32 int / 16 float registers, native `repeat`, the module subsystem, IR |
+| **2.17** | `.pulldown` / `.touch` / `.dac` pin modes, `configurePWM`, sonar + DHT + display modules, task ops PWM-frequency / delay-operand / `once` |
+| **2.18** | IR raw timings captured as text; compact 4×6 display font and line wrap |
+| **2.19** | Task byte budget 512 → **4096** |
+| **2.20** | One-shot sonar / DHT reads that answer the host directly (no register) |
+| **2.21** | `.tone` pin mode + `TONE_CONFIG` (tone output is mode-gated) |
+| **2.23** | Mic module — analog and I²S MEMS (INMP441) |
+| **2.24** | Mic: settable I²S sample rate, on-device dominant frequency (FFT) |
+| **2.27** | Display pixels, page blits and bitmap slots; **raw memory** read/write/info |
 
 ## Quick start
 
@@ -74,6 +91,10 @@ evicted client receives an `EVICTED` notice and its stream ends.
   `queryRegisters`
 - **Wi-Fi provisioning** (encrypted X25519 + AES-GCM, over any transport):
   `provisionWiFi`, `queryWiFiStatus`, `forgetWiFi`
+- **Raw memory** (firmware 2.27+): `queryMemoryInfo` (heap + the DRAM window),
+  `readMemory`, `writeMemory` — a debugger's view of the board's RAM. Reads are
+  range-checked on-device, so browsing is safe; **writes are live and can crash the
+  board**
 - **Tasks**: `uploadTask`, plus low-level `createTask` / `addToTask` / `scheduleTask`
   / `deleteTask` / `resetTasks` / `queryAllTasks` / `queryTask`
 
@@ -124,7 +145,7 @@ guard try await client.queryModules().contains(where: { $0.name == "ir" }) else 
 | `0x01` | `ir` | Infrared transmit/receive — NEC, RC6, Coolix, or raw; plus capture as text to learn a protocol | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) |
 | `0x02` | `sonar` | HC-SR04 / US-100 ultrasonic distance → register | [SwiftFirmataSonar](https://github.com/doraorak/SwiftFirmataSonar) |
 | `0x03` | `dht` | DHT11 / DHT22 temperature & humidity → float registers | [SwiftFirmataDHT](https://github.com/doraorak/SwiftFirmataDHT) |
-| `0x04` | `display` | SSD1306 / SH1106 OLED — text, registers, strings; 5×7 or compact 4×6 font | [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) |
+| `0x04` | `display` | SSD1306 / SH1106 OLED — text, registers, strings; 5×7 or compact 4×6 font; pixels, whole frames and constant-size bitmap slots | [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) |
 | `0x05` | `mic` | Sound level from an analog or **I²S MEMS** mic (INMP441) → dB/RMS registers; on-device dominant-frequency (FFT) → Hz | [SwiftFirmataMic](https://github.com/doraorak/SwiftFirmataMic) |
 
 ## Testing

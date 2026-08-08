@@ -33,7 +33,7 @@ Display, Mic). Each section is self-contained: a short "what it is", runnable sn
 14. [Operands & the value model](#14-operands--the-value-model) · 15. [Branches](#15-branches) ·
 16. [Repeat & Once](#16-repeat--once) · 17. [Arithmetic](#17-arithmetic) ·
 18. [On-device reads](#18-on-device-reads) · 19. [Internet & JSON in a task](#19-internet--json-in-a-task) ·
-20. [Strings](#20-strings) · 21. [Nested tasks](#21-nested-tasks) · 22. [Telemetry & heap](#22-telemetry--heap)
+20. [Strings](#20-strings) · 21. [Nested tasks](#21-nested-tasks) · 22. [Telemetry, heap & raw memory](#22-telemetry-heap--raw-memory)
 
 **Extending & modules**
 23. [Custom transports](#23-custom-transports) · 24. [Modules — discovery & the generic primitive](#24-modules--discovery--the-generic-primitive) ·
@@ -682,7 +682,7 @@ try await client.uploadTask(id: 6) { parent in
 
 ---
 
-## 22. Telemetry & heap
+## 22. Telemetry, heap & raw memory
 
 Push a string from a task to whatever host is connected, and read the board's memory:
 
@@ -702,6 +702,55 @@ the [messages stream](#2-the-messages-stream).
 
 **Caveats**
 - `sendString` reaches only a *connected* host; with nobody listening it's a no-op (no buffering).
+
+### Raw memory (live, firmware 2.27+)
+
+A debugger's view of the board's RAM. `queryMemoryInfo()` gives the heap numbers plus the window
+worth browsing; `readMemory` and `writeMemory` work on raw addresses.
+
+```swift
+let info = try await client.queryMemoryInfo()
+print(info.freeHeap, info.totalHeap, info.minFreeHeap)   // bytes
+print(info.usedHeap, info.usedFraction)                  // derived
+print(String(format: "%08X-%08X", info.dramLow, info.dramHigh))
+
+let (bytes, ok) = try await client.readMemory(at: info.dramLow, count: 64)
+if ok { print(bytes.map { String(format: "%02X", $0) }.joined(separator: " ")) }
+
+try await client.writeMemory(at: 0x3FFC_E000, bytes: [0xDE, 0xAD, 0xBE, 0xEF])
+```
+
+One request carries at most `FirmataClient.memoryChunkLimit` bytes (224). Page a larger window
+yourself — the reads are independent, so a window that runs off the end of a mapped region gives
+you real data up to the edge and a refusal after it:
+
+```swift
+var page: [UInt8?] = []
+var offset = 0
+while offset < 512 {
+    let n = min(FirmataClient.memoryChunkLimit, 512 - offset)
+    let r = try await client.readMemory(at: base &+ UInt32(offset), count: n)
+    page += r.ok ? r.bytes.map { Optional($0) } : [UInt8?](repeating: nil, count: n)
+    offset += n
+}
+```
+
+**Tips**
+- `dramLow`/`dramHigh` are the internal data-RAM bounds — start browsing there rather than at 0.
+- `usedFraction` is ready-made for a progress ring or gauge.
+- Reads are range-checked **on the device** against the chip's mapped regions, so walking a browser
+  over arbitrary addresses is safe: an unmapped address comes back `ok == false`, not a crash.
+
+**Caveats**
+- **Writes are not checked the way reads are, and they are live.** The firmware, your uploaded
+  tasks, the registers and the network stack all live in that RAM; a wrong address can corrupt the
+  running program, freeze the board or reboot it. Nothing here is persistent — power-cycle to
+  recover.
+- `readMemory` clamps `count` to `memoryChunkLimit`; `writeMemory` throws `FirmataError.invalidData`
+  past it rather than truncating silently.
+- `ok == false` means "the device refused this range", and `bytes` is then empty — check it before
+  using the result.
+- Addresses are absolute 32-bit device addresses, sent as 7-bit limbs like every other 32-bit value.
 
 ---
 
@@ -980,7 +1029,42 @@ try await client.uploadTask(id: 1, repeatEvery: .minutes(5)) { board in
 - Each print is independent and self-padding, so you can refresh one line without clearing the panel.
 - `displayPrint(_ string: TaskString)` is the bridge from JSON / IR-text capture to the glass.
 
+### Pixels and bitmap slots (firmware 2.25+ / 2.26+)
+
+Beyond text, the panel takes individual pixels and whole frames. A frame is row-major
+`pixels[y * 128 + x]`, 128×64 — `FirmataDisplay.size` if you'd rather not hard-code it.
+
+```swift
+try await client.displaySetPixel(x: 10, y: 20)              // live single pixel
+try await client.displayDrawBitmap(frame)                   // whole 128×64 frame
+```
+
+I²C is write-only, so per-pixel edits are served from a shadow framebuffer the firmware keeps;
+a full frame goes out as 8 page-blits.
+
+In a **task**, inlining a frame costs ~2 KB of the task's byte budget — enough that two drawings
+won't fit. Store the frames in the firmware's bitmap **slots** first and the task just names one:
+
+```swift
+try await client.displayStoreBitmap(logo, inSlot: 0)        // before uploading the task
+try await client.displayStoreBitmap(alert, inSlot: 1)
+
+try await client.uploadTask(id: 3, repeatEvery: .seconds(2)) { board in
+    board.once { $0.displayConfigure(kind: .ssd1306) }
+    board.displayDrawSlot(0)                                // 2 bytes, not ~2 KB
+    board.delay(.seconds(1))
+    board.displayDrawSlot(1)
+}
+```
+
+`FirmataDisplay.slotCount` slots are available (4). Storing is a live call, so the slots must be
+filled **before** the task that references them is uploaded.
+
 **Caveats**
+- Slots live in RAM: they survive `reset()` but not a power cycle. Re-store them when the board
+  comes back, or the task draws whatever the slot last held.
+- `displayDrawBitmap` in a task still works and is fine for a single one-off drawing; prefer slots
+  the moment there is more than one.
 - Text is 7-bit ASCII; non-ASCII renders as `?`. A line clamps to 21 chars (5×7 / 25 with the small font).
 - `line` is 0–7, `col` is 0-based. Off-panel coordinates are masked, not errored.
 - String slots referenced by `displayPrint(_:)` come from the device string pool (slots 0–1 are the JSON snapshot slots; strings start internally at index 2 — the package maps a `TaskString` to the right device slot for you).
