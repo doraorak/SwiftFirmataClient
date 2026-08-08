@@ -102,7 +102,43 @@ public struct FirmataParser: Sendable {
         case SysEx.extendedAnalog:        return parseExtendedAnalog(payload)
         case SysEx.moduleData:            return parseModule(payload)
         case SysEx.schedulerData:         return parseScheduler(payload)
+        case SysEx.memoryData:            return parseMemory(payload)
         default:                          return .unknownSysEx(id: id, data: payload)
+        }
+    }
+
+    /// `SysEx.memoryData` replies. Both carry 32-bit values as 5 little-endian 7-bit limbs,
+    /// and payload bytes as two 7-bit halves (low 7 bits, then bit 7) — the same encoding the
+    /// rest of this protocol uses.
+    private func parseMemory(_ payload: [UInt8]) -> FirmataMessage? {
+        guard let sub = payload.first else { return nil }
+        let body = Array(payload.dropFirst())
+        func limb(_ i: Int) -> UInt32 {
+            var v: UInt32 = 0
+            for k in 0..<5 where i + k < body.count { v |= UInt32(body[i + k] & 0x7F) << (7 * k) }
+            return v
+        }
+        switch sub {
+        case Mem.readReply:
+            guard body.count >= 8 else { return nil }
+            let ok = body[0] == 1
+            let addr = limb(1)
+            let n = Int(body[6] & 0x7F) | (Int(body[7] & 0x7F) << 7)
+            var bytes: [UInt8] = []
+            if ok {
+                bytes.reserveCapacity(n)
+                for i in 0..<n where 8 + i * 2 + 1 < body.count {
+                    bytes.append((body[8 + i * 2] & 0x7F) | ((body[9 + i * 2] & 0x01) << 7))
+                }
+            }
+            return .memoryRead(address: addr, bytes: bytes, ok: ok)
+        case Mem.infoReply:
+            guard body.count >= 25 else { return nil }
+            return .memoryInfo(MemoryInfo(freeHeap: limb(0), totalHeap: limb(5),
+                                          minFreeHeap: limb(10),
+                                          dramLow: limb(15), dramHigh: limb(20)))
+        default:
+            return .unknownSysEx(id: SysEx.memoryData, data: payload)
         }
     }
 

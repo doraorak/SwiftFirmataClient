@@ -54,6 +54,10 @@ public enum FirmataMessage: Sendable {
     case registers(RegisterSnapshot)
     /// Reply to `queryModules`: the firmware's installed optional modules.
     case modules([ModuleInfo])
+    /// Reply to `readMemory`. `ok` is false when the device refused the range as unreadable.
+    case memoryRead(address: UInt32, bytes: [UInt8], ok: Bool)
+    /// Reply to `queryMemoryInfo`: heap figures and the chip's data-RAM window.
+    case memoryInfo(MemoryInfo)
     /// An event a module pushed to the host (`id` = module id, payload = its own protocol).
     case moduleEvent(id: UInt8, payload: [UInt8])
 
@@ -187,4 +191,20 @@ extension HTTPResponse {
     public func decode<T: Decodable>(_ type: T.Type, using decoder: JSONDecoder = JSONDecoder()) throws -> T {
         try decoder.decode(type, from: Data(body.utf8))
     }
+}
+
+/// Heap accounting plus the chip's data-RAM address window, for a memory browser.
+public struct MemoryInfo: Sendable, Equatable {
+    /// Bytes currently free on the internal heap.
+    public let freeHeap: UInt32
+    /// Total internal heap size.
+    public let totalHeap: UInt32
+    /// Low-water mark: the least free heap has ever been this power-up.
+    public let minFreeHeap: UInt32
+    /// Start/end of internal data RAM — a sane default window to browse.
+    public let dramLow: UInt32
+    public let dramHigh: UInt32
+
+    public var usedHeap: UInt32 { totalHeap >= freeHeap ? totalHeap - freeHeap : 0 }
+    public var usedFraction: Double { totalHeap == 0 ? 0 : Double(usedHeap) / Double(totalHeap) }
 }

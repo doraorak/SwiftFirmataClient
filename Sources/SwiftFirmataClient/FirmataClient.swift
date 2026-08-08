@@ -88,6 +88,10 @@ public actor FirmataClient {
     // Encrypted Wi-Fi provisioning handshake (non-standard extension).
     private var pendingRegisters:  CheckedContinuation<RegisterSnapshot, Error>?
     private var registersSeq = 0
+    private var pendingMemoryRead: CheckedContinuation<(UInt32, [UInt8], Bool), Error>?
+    private var memoryReadSeq = 0
+    private var pendingMemoryInfo: CheckedContinuation<MemoryInfo, Error>?
+    private var memoryInfoSeq = 0
     private var pendingModules:    CheckedContinuation<[ModuleInfo], Error>?
 
     // Module request/reply (one-shot reads): a module op that answers with a
@@ -226,6 +230,12 @@ public actor FirmataClient {
         case .registers(let snapshot):
             pop(&pendingRegisters)?.resume(returning: snapshot)
 
+        case let .memoryRead(address, bytes, ok):
+            pop(&pendingMemoryRead)?.resume(returning: (address, bytes, ok))
+
+        case .memoryInfo(let info):
+            pop(&pendingMemoryInfo)?.resume(returning: info)
+
         case .modules(let list):
             pop(&pendingModules)?.resume(returning: list)
 
@@ -264,6 +274,8 @@ public actor FirmataClient {
         for queue in pendingI2C.values { for cont in queue { cont.resume(throwing: error) } }
         pendingI2C.removeAll()
         pop(&pendingRegisters)?.resume(throwing: error)
+        pop(&pendingMemoryRead)?.resume(throwing: error)
+        pop(&pendingMemoryInfo)?.resume(throwing: error)
         pop(&pendingModules)?.resume(throwing: error)
         pop(&pendingQueryAllTasks)?.resume(throwing: error)
         for cont in pendingQueryTask.values { cont.resume(throwing: error) }
@@ -813,6 +825,89 @@ public actor FirmataClient {
                 self.clearInFlight(token)
             }
         }
+    }
+
+    // MARK: - Raw memory (firmware 2.27+)
+
+    /* A debugger's view of the board's RAM. READS ARE RANGE-CHECKED ON THE DEVICE — an
+       unmapped load raises a LoadProhibited panic and reboots the chip, so a refused range
+       comes back as `ok == false` rather than being attempted. WRITES ARE NOT GUARDED
+       beyond the same mapped-range check: overwriting live firmware state can corrupt or
+       crash the running program. That is what the feature is for; warn the user. */
+
+    /// Largest number of bytes one read/write can carry (a reply must fit `SYSEX_MAX`).
+    public static let memoryChunkLimit = Mem.maxChunk
+
+    /// Read up to `memoryChunkLimit` bytes. Returns the bytes, or an empty array with
+    /// `ok == false` when the device refused the range as unreadable.
+    @discardableResult
+    public func readMemory(at address: UInt32, count: Int,
+                           timeout: Duration = .seconds(2)) async throws -> (bytes: [UInt8], ok: Bool) {
+        let n = min(max(count, 0), Mem.maxChunk)
+        guard n > 0 else { return ([], true) }
+        memoryReadSeq &+= 1
+        let seq = memoryReadSeq
+        let result: (UInt32, [UInt8], Bool) = try await withCheckedThrowingContinuation { cont in
+            pendingMemoryRead = cont
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                var msg: [UInt8] = [Cmd.startSysEx, SysEx.memoryData, Mem.read]
+                msg.append(contentsOf: Self.limbs5(address))
+                msg.append(UInt8(n & 0x7F)); msg.append(UInt8((n >> 7) & 0x7F))
+                msg.append(Cmd.endSysEx)
+                do { try await self.transport.send(msg) } catch {
+                    if let c = self.pop(&self.pendingMemoryRead) { c.resume(throwing: error) }
+                    self.clearInFlight(token); return
+                }
+                try? await Task.sleep(for: timeout)
+                if seq == self.memoryReadSeq, let c = self.pop(&self.pendingMemoryRead) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
+                self.clearInFlight(token)
+            }
+        }
+        return (result.1, result.2)
+    }
+
+    /// Write bytes into the board's RAM. **This can crash the firmware** — it is a raw store
+    /// into live memory. The device silently ignores an unwritable range (flash-mapped or
+    /// out of bounds); read the range back if you need confirmation.
+    public func writeMemory(at address: UInt32, bytes: [UInt8]) async throws {
+        guard !bytes.isEmpty else { return }
+        guard bytes.count <= Mem.maxChunk else { throw FirmataError.invalidData }
+        var msg: [UInt8] = [Cmd.startSysEx, SysEx.memoryData, Mem.write]
+        msg.append(contentsOf: Self.limbs5(address))
+        msg.append(UInt8(bytes.count & 0x7F)); msg.append(UInt8((bytes.count >> 7) & 0x7F))
+        for b in bytes { msg.append(b & 0x7F); msg.append((b >> 7) & 0x01) }
+        msg.append(Cmd.endSysEx)
+        try await transport.send(msg)
+    }
+
+    /// Heap free/total/low-water plus the chip's data-RAM window.
+    public func queryMemoryInfo(timeout: Duration = .seconds(2)) async throws -> MemoryInfo {
+        memoryInfoSeq &+= 1
+        let seq = memoryInfoSeq
+        return try await withCheckedThrowingContinuation { cont in
+            pendingMemoryInfo = cont
+            let token = nextTrackingToken()
+            inFlightTasks[token] = Task {
+                do {
+                    try await self.transport.send([Cmd.startSysEx, SysEx.memoryData, Mem.info, Cmd.endSysEx])
+                } catch {
+                    if let c = self.pop(&self.pendingMemoryInfo) { c.resume(throwing: error) }
+                    self.clearInFlight(token); return
+                }
+                try? await Task.sleep(for: timeout)
+                if seq == self.memoryInfoSeq, let c = self.pop(&self.pendingMemoryInfo) {
+                    c.resume(throwing: FirmataError.noResponse)
+                }
+                self.clearInFlight(token)
+            }
+        }
+    }
+
+    private static func limbs5(_ v: UInt32) -> [UInt8] {
+        (0..<5).map { UInt8((v >> (7 * $0)) & 0x7F) }
     }
 
     /// Configure a pin as a servo output with a pulse range (standard `SERVO_CONFIG`).

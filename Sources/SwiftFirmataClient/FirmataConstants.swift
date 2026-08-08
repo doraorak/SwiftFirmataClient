@@ -124,6 +124,20 @@ internal enum SysEx {
     internal static let toneConfig:            UInt8 = 0x0B  // <pin> <freq:14b> <dur:14b> tone (user range)
     internal static let servoConfig:           UInt8 = 0x70
     internal static let schedulerData:         UInt8 = 0x7B
+    /// Raw memory inspection (user-range). Sub-ops in `Mem`.
+    internal static let memoryData:            UInt8 = 0x0F
+}
+
+/// `SysEx.memoryData` sub-commands. Reads are range-checked on the device (an unmapped
+/// load panics the chip); writes are not otherwise guarded.
+internal enum Mem {
+    internal static let read:       UInt8 = 0x00
+    internal static let write:      UInt8 = 0x01
+    internal static let info:       UInt8 = 0x02
+    internal static let readReply:  UInt8 = 0x7F
+    internal static let infoReply:  UInt8 = 0x7E
+    /// Device-side cap per request so a reply fits SYSEX_MAX after 8/7 encoding.
+    internal static let maxChunk = 224
 }
 
 /// Scheduler sub-commands (first payload byte after `SysEx.schedulerData`).
