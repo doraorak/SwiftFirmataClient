@@ -504,10 +504,12 @@ board.ifTrue(over, then: { … })
 ## 16. Repeat & Once
 
 **Repeat** runs a block a fixed number of times on-device — a native counted loop, not unrolled
-bytes, so 1000 iterations cost the same as 5. Nestable up to **4 deep**.
+bytes, so 1000 iterations cost the same as 5. Nestable up to **4 deep**. It is declared as
+`` func `repeat` `` because `repeat` is a Swift keyword, but you call it plainly — after a `.`
+the compiler is not parsing a statement, so `board.repeat(times:)` needs no backticks.
 
 ```swift
-board.`repeat`(times: 5, gap: .milliseconds(200)) { board in
+board.repeat(times: 5, gap: .milliseconds(200)) { board in
     board.digitalWrite(pin: .pin(2), high: true)
     board.delay(.milliseconds(100))
     board.digitalWrite(pin: .pin(2), high: false)
@@ -837,7 +839,7 @@ All sends are **single-frame**. To repeat a key, wrap the send in a task `repeat
 ```swift
 try await client.uploadTask(id: 1) { board in
     board.irConfigureTransmit(pin: .pin(4))
-    board.`repeat`(times: 4, gap: .milliseconds(40)) { $0.irSendNEC(0x20DF10EF) }
+    board.repeat(times: 4, gap: .milliseconds(40)) { $0.irSendNEC(0x20DF10EF) }
 }
 ```
 
