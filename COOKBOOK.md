@@ -1194,7 +1194,8 @@ try await client.uploadTask(id: 3, repeatEvery: .milliseconds(500)) { board in
 - `FirmataPin` — `.pin(n)`; `FirmataChannel` — `.channel(n)`.
 - `PinMode` — the modes this firmware implements: `.input`/`.inputPullup`/`.inputPulldown`/`.output`/`.analog`/`.pwm`/`.servo`/`.i2c`/`.touch`/`.dac`/`.tone`. Mode-gated writes: `toneWrite(pin:hz:)` / `toneWrite(pin:hz:for:)`, `dacWrite(pin:value:)`, `touchRead(pin:)`.
 - `HTTPResponse` — `.status: Int`, `.body: String`. `WiFiStatus`, `RegisterSnapshot` (`.ints`, `.floats`), `ModuleInfo` (`.id`, `.name`, version), `PinState`, `I2CReply`, `[[PinCapability]]`.
-- `FirmataMessage` — `.digital` `.analog` `.stringData` `.moduleEvent` `.i2cReply` `.registers` `.modules` … (see [§2](#2-the-messages-stream)).
+- `MemoryInfo` — `.freeHeap` `.totalHeap` `.minFreeHeap` `.dramLow` `.dramHigh`, plus derived `.usedHeap` / `.usedFraction`. Returned by `queryMemoryInfo()` (see [§22](#22-telemetry-heap--raw-memory)).
+- `FirmataMessage` — `.digital` `.analog` `.stringData` `.moduleEvent` `.i2cReply` `.registers` `.modules` `.memoryRead` `.memoryInfo` … (see [§2](#2-the-messages-stream)).
 
 **Task operands** (all `TaskOperand`)
 - Integer: `TaskNumberLiteral` (`.number(_:)`), `TaskNumberRegister` (`.reg(0…15)`).
