@@ -134,19 +134,25 @@ discover what the connected firmware has, `sendToModule(id:payload:)` /
 `FirmataTaskRecorder.moduleOp(id:payload:)` to talk to one, and
 `sendToModuleAwaitingReply(id:payload:)` for request/reply ops (e.g. a one-shot sensor
 read that answers directly). Each module ships as its own package that depends on this
-one, adding typed extensions — import only what you need.
+one, adding typed extensions — import only what you need. They all live in
+[SwiftFirmataModules](https://github.com/doraorak/SwiftFirmataModules): one package, one library
+product per module, so depending on it does not pull all five into your binary.
+
+```swift
+.package(url: "https://github.com/doraorak/SwiftFirmataModules", from: "1.0.0")
+```
 
 ```swift
 guard try await client.queryModules().contains(where: { $0.name == "ir" }) else { return }
 ```
 
-| ID | Module | Purpose | Package |
+| ID | Module | Purpose | Product |
 |----|--------|---------|---------|
-| `0x01` | `ir` | Infrared transmit/receive — NEC, RC6, Coolix, or raw; plus capture as text to learn a protocol | [SwiftFirmataIR](https://github.com/doraorak/SwiftFirmataIR) |
-| `0x02` | `sonar` | HC-SR04 / US-100 ultrasonic distance → register | [SwiftFirmataSonar](https://github.com/doraorak/SwiftFirmataSonar) |
-| `0x03` | `dht` | DHT11 / DHT22 temperature & humidity → float registers | [SwiftFirmataDHT](https://github.com/doraorak/SwiftFirmataDHT) |
-| `0x04` | `display` | SSD1306 / SH1106 OLED — text, registers, strings; 5×7 or compact 4×6 font; pixels, whole frames and constant-size bitmap slots | [SwiftFirmataDisplay](https://github.com/doraorak/SwiftFirmataDisplay) |
-| `0x05` | `mic` | Sound level from an analog or **I²S MEMS** mic (INMP441) → dB/RMS registers; on-device dominant-frequency (FFT) → Hz | [SwiftFirmataMic](https://github.com/doraorak/SwiftFirmataMic) |
+| `0x01` | `ir` | Infrared transmit/receive — NEC, RC6, Coolix, or raw; plus capture as text to learn a protocol | `SwiftFirmataIR` |
+| `0x02` | `sonar` | HC-SR04 / US-100 ultrasonic distance → register | `SwiftFirmataSonar` |
+| `0x03` | `dht` | DHT11 / DHT22 temperature & humidity → float registers | `SwiftFirmataDHT` |
+| `0x04` | `display` | SSD1306 / SH1106 OLED — text, registers, strings; 5×7 or compact 4×6 font; pixels, whole frames and constant-size bitmap slots | `SwiftFirmataDisplay` |
+| `0x05` | `mic` | Sound level from an analog or **I²S MEMS** mic (INMP441) → dB/RMS registers; on-device dominant-frequency (FFT) → Hz | `SwiftFirmataMic` |
 
 ## Testing
 
