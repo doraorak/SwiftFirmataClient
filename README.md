@@ -133,10 +133,10 @@ Optional hardware subsystems sit behind generic primitives — `queryModules()` 
 discover what the connected firmware has, `sendToModule(id:payload:)` /
 `FirmataTaskRecorder.moduleOp(id:payload:)` to talk to one, and
 `sendToModuleAwaitingReply(id:payload:)` for request/reply ops (e.g. a one-shot sensor
-read that answers directly). Each module ships as its own package that depends on this
-one, adding typed extensions — import only what you need. They all live in
-[SwiftFirmataModules](https://github.com/doraorak/SwiftFirmataModules): one package, one library
-product per module, so depending on it does not pull all five into your binary.
+read that answers directly). The modules add typed extensions on top of this package and live in
+[SwiftFirmataModules](https://github.com/doraorak/SwiftFirmataModules) — one package with a
+library product per module, so depending on it does not pull all five into your binary. Import
+only what you need.
 
 ```swift
 .package(url: "https://github.com/doraorak/SwiftFirmataModules", from: "1.0.0")
